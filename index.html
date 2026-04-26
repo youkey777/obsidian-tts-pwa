@@ -682,10 +682,11 @@ class TTSEngine {
       });
       if (this.isPlaying) this._speakCloud(idx + 1);
     } catch (e) {
-      if (this.isPlaying) {
-        showToast('音声取得エラー: ' + e.message);
-        if (this.isPlaying) this._speakCloud(idx + 1);
-      }
+      this.isPlaying = false;
+      if (this.onSegmentChange) this.onSegmentChange(-1);
+      if (this.onEnd) this.onEnd();
+      const msg = e.message || String(e);
+      alert('Cloud TTS エラー:\n' + msg + '\n\nAPIキーまたはAPI有効化を確認してください。');
     }
   }
 
