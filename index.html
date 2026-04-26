@@ -347,6 +347,51 @@
     }
 
     /* ── Toast ── */
+    #settings-panel {
+      display: none;
+      flex-direction: column;
+      padding: 16px;
+      gap: 14px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    #settings-panel.active { display: flex; }
+    .settings-group { display: flex; flex-direction: column; gap: 6px; }
+    .settings-label { font-size: 13px; color: var(--muted); font-weight: 500; }
+    .settings-hint { font-size: 11px; color: var(--muted); opacity: 0.75; line-height: 1.5; }
+    #cloud-api-key {
+      background: var(--elevated);
+      color: var(--text);
+      border: 1px solid rgba(124,58,237,0.35);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-family: monospace;
+      width: 100%;
+    }
+    #cloud-api-key::placeholder { color: var(--muted); opacity: 0.6; }
+    #cloud-voice-select {
+      background: var(--elevated);
+      color: var(--text);
+      border: 1px solid rgba(124,58,237,0.35);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      width: 100%;
+    }
+    #btn-save-settings {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 13px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+    #cloud-status { text-align: center; font-size: 12px; color: var(--highlight-border); min-height: 18px; }
+
     .segment-heading {
       border-top: 2px solid rgba(124,58,237,0.5);
       color: var(--accent-light);
@@ -407,6 +452,7 @@
   <div id="tabs">
     <div class="tab active" data-tab="preview">読み上げ</div>
     <div class="tab" data-tab="input">テキスト入力</div>
+    <div class="tab" data-tab="settings">⚙ 設定</div>
   </div>
 
   <div id="preview-panel" class="active">
@@ -430,6 +476,27 @@
   <div id="input-panel">
     <textarea id="text-input" placeholder="ここにMarkdownテキストを貼り付けてください...&#10;&#10;Obsidianのノート、Discordのメッセージなど何でもOKです。URLやMarkdown記号は自動で除去します。"></textarea>
     <button id="btn-load">読み上げ開始</button>
+  </div>
+
+  <div id="settings-panel">
+    <div class="settings-group">
+      <div class="settings-label">Google Cloud TTS APIキー</div>
+      <input type="password" id="cloud-api-key" placeholder="AIzaSy... （未入力 = デバイス音声）" autocomplete="off">
+      <div class="settings-hint">設定すると Neural2 高品質日本語音声に切り替わります。月100万文字まで無料。</div>
+    </div>
+    <div class="settings-group">
+      <div class="settings-label">クラウド音声の種類</div>
+      <select id="cloud-voice-select">
+        <option value="ja-JP-Neural2-B">Neural2 男性B（推奨）</option>
+        <option value="ja-JP-Neural2-C">Neural2 女性C（推奨）</option>
+        <option value="ja-JP-Neural2-D">Neural2 男性D</option>
+        <option value="ja-JP-Wavenet-B">WaveNet 男性B</option>
+        <option value="ja-JP-Wavenet-C">WaveNet 女性C</option>
+        <option value="ja-JP-Wavenet-D">WaveNet 男性D</option>
+      </select>
+    </div>
+    <button id="btn-save-settings">保存して適用</button>
+    <div id="cloud-status"></div>
   </div>
 
   <div id="controls">
@@ -557,7 +624,69 @@ class TTSEngine {
     this.onSegmentChange = null;
     this.onEnd = null;
     this._voices = [];
+    this._cloudKey = '';
+    this._cloudVoice = 'ja-JP-Neural2-B';
+    this._audioCache = new Map();
+    this._currentAudio = null;
     this._initVoices();
+  }
+
+  setCloudKey(key, voice) {
+    this._cloudKey = key || '';
+    if (voice) this._cloudVoice = voice;
+    if (!key) this._audioCache.clear();
+  }
+
+  async _fetchCloudAudio(text) {
+    if (this._audioCache.has(text)) return this._audioCache.get(text);
+    const res = await fetch(
+      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${this._cloudKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: { text },
+          voice: { languageCode: 'ja-JP', name: this._cloudVoice },
+          audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0 }
+        })
+      }
+    );
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    this._audioCache.set(text, data.audioContent);
+    return data.audioContent;
+  }
+
+  async _speakCloud(idx) {
+    if (idx >= this.segments.length) {
+      this.isPlaying = false;
+      this.currentIndex = 0;
+      if (this.onSegmentChange) this.onSegmentChange(-1);
+      if (this.onEnd) this.onEnd();
+      return;
+    }
+    this.currentIndex = idx;
+    if (this.onSegmentChange) this.onSegmentChange(idx);
+    if (idx + 1 < this.segments.length) {
+      this._fetchCloudAudio(this.segments[idx + 1]).catch(() => {});
+    }
+    try {
+      const b64 = await this._fetchCloudAudio(this.segments[idx]);
+      if (!this.isPlaying) return;
+      this._currentAudio = new Audio(`data:audio/mp3;base64,${b64}`);
+      this._currentAudio.playbackRate = this.rate;
+      await new Promise((resolve, reject) => {
+        this._currentAudio.onended = resolve;
+        this._currentAudio.onerror = reject;
+        this._currentAudio.play().catch(reject);
+      });
+      if (this.isPlaying) this._speakCloud(idx + 1);
+    } catch (e) {
+      if (this.isPlaying) {
+        showToast('音声取得エラー: ' + e.message);
+        if (this.isPlaying) this._speakCloud(idx + 1);
+      }
+    }
   }
 
   _initVoices() {
@@ -623,10 +752,16 @@ class TTSEngine {
     if (this.isPlaying || !this.segments.length) return;
     if (this.currentIndex >= this.segments.length) this.currentIndex = 0;
     this.isPlaying = true;
+    if (this._cloudKey && this._currentAudio?.paused) {
+      this._currentAudio.play();
+      this._currentAudio.onended = () => { if (this.isPlaying) this._speakCloud(this.currentIndex + 1); };
+      return;
+    }
     this._speak(this.currentIndex);
   }
 
   _speak(idx, charOffset = 0) {
+    if (this._cloudKey) { this._speakCloud(idx); return; }
     if (idx >= this.segments.length) {
       this.isPlaying = false;
       this.currentIndex = 0;
@@ -662,22 +797,31 @@ class TTSEngine {
   pause() {
     if (!this.isPlaying) return;
     this.isPlaying = false;
+    if (this._cloudKey) {
+      if (this._currentAudio) this._currentAudio.pause();
+    } else {
+      window.speechSynthesis.cancel();
+    }
+  }
+
+  _cancelAll() {
     window.speechSynthesis.cancel();
+    if (this._currentAudio) { this._currentAudio.pause(); this._currentAudio = null; }
   }
 
   stop() {
     this.isPlaying = false;
     this.currentIndex = 0;
     this._lastCharIndex = 0;
-    window.speechSynthesis.cancel();
+    this._cancelAll();
     if (this.onSegmentChange) this.onSegmentChange(-1);
   }
 
   prev() {
     const idx = Math.max(0, this.currentIndex - 1);
     const wasPlaying = this.isPlaying;
-    window.speechSynthesis.cancel();
     this.isPlaying = false;
+    this._cancelAll();
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
     if (wasPlaying) { this.isPlaying = true; this._speak(idx); }
@@ -686,8 +830,8 @@ class TTSEngine {
   next() {
     const idx = Math.min(this.segments.length - 1, this.currentIndex + 1);
     const wasPlaying = this.isPlaying;
-    window.speechSynthesis.cancel();
     this.isPlaying = false;
+    this._cancelAll();
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
     if (wasPlaying) { this.isPlaying = true; this._speak(idx); }
@@ -695,8 +839,8 @@ class TTSEngine {
 
   seekTo(idx) {
     const wasPlaying = this.isPlaying;
-    window.speechSynthesis.cancel();
     this.isPlaying = false;
+    this._cancelAll();
     this.currentIndex = Math.max(0, Math.min(idx, this.segments.length - 1));
     if (this.onSegmentChange) this.onSegmentChange(this.currentIndex);
     if (wasPlaying) { this.isPlaying = true; this._speak(this.currentIndex); }
@@ -704,7 +848,9 @@ class TTSEngine {
 
   setRate(r) {
     this.rate = Math.max(1.0, Math.min(2.0, r));
-    if (this.isPlaying) {
+    if (this._cloudKey) {
+      if (this._currentAudio) this._currentAudio.playbackRate = this.rate;
+    } else if (this.isPlaying) {
       const idx = this.currentIndex;
       const offset = this._lastCharIndex;
       window.speechSynthesis.cancel();
@@ -824,6 +970,7 @@ function switchTab(name) {
   );
   $('preview-panel').classList.toggle('active', name === 'preview');
   $('input-panel').classList.toggle('active', name === 'input');
+  $('settings-panel').classList.toggle('active', name === 'settings');
 }
 
 // TTS callbacks
@@ -915,6 +1062,36 @@ document.querySelectorAll('.tab').forEach(tab =>
   tab.addEventListener('click', () => switchTab(tab.dataset.tab))
 );
 
+// ============================================================
+// CLOUD TTS SETTINGS
+// ============================================================
+function loadCloudSettings() {
+  const key = localStorage.getItem('obs-tts-cloud-key') || '';
+  const voice = localStorage.getItem('obs-tts-cloud-voice') || 'ja-JP-Neural2-B';
+  $('cloud-api-key').value = key;
+  $('cloud-voice-select').value = voice;
+  tts.setCloudKey(key, voice);
+  if (key) $('cloud-status').textContent = '☁ クラウド音声が有効です';
+}
+
+$('btn-save-settings').addEventListener('click', () => {
+  const key = $('cloud-api-key').value.trim();
+  const voice = $('cloud-voice-select').value;
+  tts.setCloudKey(key, voice);
+  if (key) {
+    localStorage.setItem('obs-tts-cloud-key', key);
+    localStorage.setItem('obs-tts-cloud-voice', voice);
+    $('cloud-status').textContent = '☁ クラウド音声が有効です';
+    showToast('設定を保存しました ✓');
+  } else {
+    localStorage.removeItem('obs-tts-cloud-key');
+    localStorage.removeItem('obs-tts-cloud-voice');
+    $('cloud-status').textContent = '';
+    showToast('APIキーを削除しました');
+  }
+  switchTab('preview');
+});
+
 $('segments-container').addEventListener('click', e => {
   const seg = e.target.closest('.segment');
   if (seg) tts.seekTo(parseInt(seg.dataset.index, 10));
@@ -943,6 +1120,7 @@ if ('serviceWorker' in navigator) {
 }
 
 window.addEventListener('load', async () => {
+  loadCloudSettings();
   const data = await readAndClearShare();
   if (data && (data.text || data.url)) {
     loadText(data.text || data.url, data.title);
