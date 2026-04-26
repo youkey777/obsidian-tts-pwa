@@ -108,11 +108,69 @@
     #empty-state {
       text-align: center;
       color: var(--muted);
-      padding: 40px 24px;
+      padding: 32px 20px;
       line-height: 2.2;
       font-size: 14px;
     }
-    #empty-state .icon { font-size: 52px; display: block; margin-bottom: 14px; }
+    #empty-state .icon { font-size: 48px; display: block; margin-bottom: 12px; }
+
+    #btn-clipboard-main {
+      display: block;
+      width: 100%;
+      margin: 20px 0 8px;
+      padding: 16px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      letter-spacing: 0.3px;
+    }
+    #btn-clipboard-main:active { opacity: 0.82; }
+
+    .empty-hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    /* クリップボード検出バナー */
+    #clipboard-banner {
+      display: none;
+      background: var(--elevated);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+    #clipboard-banner.show { display: flex; align-items: center; gap: 10px; }
+    #clipboard-banner-text { flex: 1; color: var(--text); }
+    #clipboard-banner-text small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+    #btn-clipboard-load {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #btn-clipboard-dismiss {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px;
+      line-height: 1;
+    }
 
     .segment {
       padding: 9px 12px;
@@ -326,13 +384,19 @@
   </div>
 
   <div id="preview-panel" class="active">
+    <div id="clipboard-banner">
+      <div id="clipboard-banner-text">
+        クリップボードにテキストを検出
+        <small id="clipboard-preview"></small>
+      </div>
+      <button id="btn-clipboard-load">読み込む</button>
+      <button id="btn-clipboard-dismiss">✕</button>
+    </div>
     <div id="empty-state">
       <span class="icon">🎧</span>
-      Obsidianでノートを開き<br>
-      「共有」→「ObsTTS」を選択<br>
-      <br>
-      または「テキスト入力」タブから<br>
-      貼り付けて読み上げ
+      <div>Obsidianでノートを<br>「すべて選択 → コピー」してから</div>
+      <button id="btn-clipboard-main">📋 クリップボードから読み込む</button>
+      <div class="empty-hint">または「テキスト入力」タブから貼り付け</div>
     </div>
     <div id="segments-container"></div>
   </div>
@@ -714,6 +778,61 @@ $('btn-load').addEventListener('click', () => {
   if (!text) { showToast('テキストを入力してください'); return; }
   loadText(text);
   $('text-input').value = '';
+});
+
+// ============================================================
+// CLIPBOARD
+// ============================================================
+let _pendingClipboardText = '';
+
+async function readClipboard() {
+  if (!navigator.clipboard?.readText) {
+    showToast('このブラウザではクリップボード読み込みに非対応です');
+    return null;
+  }
+  try {
+    const text = await navigator.clipboard.readText();
+    return text?.trim() || null;
+  } catch (e) {
+    showToast('クリップボードへのアクセスが拒否されました');
+    return null;
+  }
+}
+
+async function handleClipboardLoad() {
+  const text = _pendingClipboardText || await readClipboard();
+  if (!text) { showToast('クリップボードが空です'); return; }
+  _pendingClipboardText = '';
+  hideBanner();
+  loadText(text);
+}
+
+function showBanner(text) {
+  _pendingClipboardText = text;
+  const preview = text.slice(0, 40).replace(/\n/g, ' ');
+  $('clipboard-preview').textContent = preview + (text.length > 40 ? '…' : '');
+  $('clipboard-banner').classList.add('show');
+}
+
+function hideBanner() {
+  $('clipboard-banner').classList.remove('show');
+  _pendingClipboardText = '';
+}
+
+// アプリにフォーカスが戻ったときにクリップボードを自動検出
+async function checkClipboardOnFocus() {
+  if (tts.total > 0) return; // 既にテキストがロードされていれば無視
+  const text = await readClipboard().catch(() => null);
+  if (text && text.length > 80) showBanner(text);
+}
+
+$('btn-clipboard-main').addEventListener('click', handleClipboardLoad);
+$('btn-clipboard-load').addEventListener('click', handleClipboardLoad);
+$('btn-clipboard-dismiss').addEventListener('click', hideBanner);
+
+// フォーカス復帰時（Obsidianから切り替えてきたとき）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkClipboardOnFocus();
 });
 
 document.querySelectorAll('.tab').forEach(tab =>
