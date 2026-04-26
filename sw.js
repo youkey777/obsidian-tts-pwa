@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'obs-tts-v9';
+const CACHE_VERSION = 'obs-tts-v10';
 const CACHE_ASSETS = [
   './',
   './index.html',
@@ -26,10 +26,13 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
-  if (event.request.method === 'POST') {
+  const url = new URL(event.request.url);
+  // 同一オリジンのPOSTのみShareTargetとして処理（クロスオリジンAPI呼び出しは素通り）
+  if (event.request.method === 'POST' && url.origin === self.location.origin) {
     event.respondWith(handleShareTarget(event.request));
     return;
   }
+  if (event.request.method !== 'GET') return;
   event.respondWith(
     caches.match(event.request)
       .then(cached => cached || fetch(event.request)
