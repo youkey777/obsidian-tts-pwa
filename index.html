@@ -487,12 +487,14 @@
     <div class="settings-group">
       <div class="settings-label">クラウド音声の種類</div>
       <select id="cloud-voice-select">
-        <option value="ja-JP-Neural2-B">Neural2 男性B（推奨）</option>
-        <option value="ja-JP-Neural2-C">Neural2 女性C（推奨）</option>
+        <option value="ja-JP-Neural2-C">Neural2 男性C（推奨）</option>
         <option value="ja-JP-Neural2-D">Neural2 男性D</option>
-        <option value="ja-JP-Wavenet-B">WaveNet 男性B</option>
-        <option value="ja-JP-Wavenet-C">WaveNet 女性C</option>
+        <option value="ja-JP-Neural2-C">Neural2 女性B</option>
+        <option value="ja-JP-Neural2-A">Neural2 女性A</option>
+        <option value="ja-JP-Wavenet-C">WaveNet 男性C</option>
         <option value="ja-JP-Wavenet-D">WaveNet 男性D</option>
+        <option value="ja-JP-Wavenet-B">WaveNet 女性B</option>
+        <option value="ja-JP-Wavenet-A">WaveNet 女性A</option>
       </select>
     </div>
     <button id="btn-save-settings">保存して適用</button>
@@ -627,7 +629,7 @@ class TTSEngine {
     this.onEnd = null;
     this._voices = [];
     this._cloudKey = '';
-    this._cloudVoice = 'ja-JP-Neural2-B';
+    this._cloudVoice = 'ja-JP-Neural2-C';
     this._audioCache = new Map();
     this._currentAudio = null;
     this._initVoices();
@@ -1069,7 +1071,7 @@ document.querySelectorAll('.tab').forEach(tab =>
 // ============================================================
 function loadCloudSettings() {
   const key = localStorage.getItem('obs-tts-cloud-key') || '';
-  const voice = localStorage.getItem('obs-tts-cloud-voice') || 'ja-JP-Neural2-B';
+  const voice = localStorage.getItem('obs-tts-cloud-voice') || 'ja-JP-Neural2-C';
   $('cloud-api-key').value = key;
   $('cloud-voice-select').value = voice;
   tts.setCloudKey(key, voice);
