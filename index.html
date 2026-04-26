@@ -496,6 +496,8 @@
       </select>
     </div>
     <button id="btn-save-settings">保存して適用</button>
+    <button id="btn-test-key" style="background:#1e3a5f; margin-top:6px;">APIキーをテスト</button>
+    <button id="btn-reload-app" style="background:#374151; margin-top:6px;">🔄 アプリを再読み込み（キャッシュ更新）</button>
     <div id="cloud-status"></div>
   </div>
 
@@ -684,9 +686,8 @@ class TTSEngine {
     } catch (e) {
       this.isPlaying = false;
       if (this.onSegmentChange) this.onSegmentChange(-1);
-      if (this.onEnd) this.onEnd();
       const msg = e.message || String(e);
-      alert('Cloud TTS エラー:\n' + msg + '\n\nAPIキーまたはAPI有効化を確認してください。');
+      alert('Cloud TTS エラー:\n' + msg + '\n\n設定タブの「APIキーをテスト」で詳細を確認してください。');
     }
   }
 
@@ -1074,6 +1075,37 @@ function loadCloudSettings() {
   tts.setCloudKey(key, voice);
   if (key) $('cloud-status').textContent = '☁ クラウド音声が有効です';
 }
+
+$('btn-test-key').addEventListener('click', async () => {
+  const key = $('cloud-api-key').value.trim();
+  if (!key) { showToast('APIキーを入力してください'); return; }
+  const voice = $('cloud-voice-select').value;
+  const status = $('cloud-status');
+  status.style.color = '';
+  status.textContent = '🔄 テスト中...';
+  try {
+    const res = await fetch(
+      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${key}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: { text: 'テスト' },
+          voice: { languageCode: 'ja-JP', name: voice },
+          audioConfig: { audioEncoding: 'MP3' }
+        }) }
+    );
+    const data = await res.json();
+    if (data.error) throw new Error(`${data.error.code}: ${data.error.message}`);
+    status.style.color = '#4ade80';
+    status.textContent = '✅ APIキー OK！Cloud TTS が使えます';
+    const audio = new Audio(`data:audio/mp3;base64,${data.audioContent}`);
+    audio.play().catch(() => {});
+  } catch (e) {
+    status.style.color = '#f87171';
+    status.textContent = '❌ エラー: ' + (e.message || String(e));
+  }
+});
+
+$('btn-reload-app').addEventListener('click', () => location.reload());
 
 $('btn-save-settings').addEventListener('click', () => {
   const key = $('cloud-api-key').value.trim();
