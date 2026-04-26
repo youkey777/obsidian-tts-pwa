@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#7c3aed">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <link rel="manifest" href="manifest.json">
+  <title>ObsTTS</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0f1a;
+      --card: #1a1a2e;
+      --elevated: #252540;
+      --accent: #7c3aed;
+      --accent-light: #a78bfa;
+      --highlight-bg: rgba(74, 222, 128, 0.12);
+      --highlight-border: #4ade80;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --danger: #ef4444;
+      --radius: 12px;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-top: env(safe-area-inset-top, 0px);
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, 'Hiragino Sans', 'Noto Sans JP', 'Meiryo', sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+      overflow: hidden;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      padding-top: var(--safe-top);
+    }
+
+    /* ── Header ── */
+    #header {
+      background: var(--card);
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      border-bottom: 1px solid var(--elevated);
+    }
+    #app-title {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--accent-light);
+      white-space: nowrap;
+      letter-spacing: -0.3px;
+    }
+    #note-title {
+      flex: 1;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Tabs ── */
+    #tabs {
+      display: flex;
+      background: var(--card);
+      flex-shrink: 0;
+      border-bottom: 1px solid var(--elevated);
+    }
+    .tab {
+      flex: 1;
+      padding: 11px 8px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.2s, border-color 0.2s;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .tab.active {
+      color: var(--accent-light);
+      border-bottom-color: var(--accent);
+    }
+
+    /* ── Preview Panel ── */
+    #preview-panel {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 14px 16px;
+      display: none;
+    }
+    #preview-panel.active { display: block; }
+
+    #empty-state {
+      text-align: center;
+      color: var(--muted);
+      padding: 40px 24px;
+      line-height: 2.2;
+      font-size: 14px;
+    }
+    #empty-state .icon { font-size: 52px; display: block; margin-bottom: 14px; }
+
+    .segment {
+      padding: 9px 12px;
+      margin-bottom: 5px;
+      border-radius: 8px;
+      border-left: 3px solid transparent;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+      color: var(--text);
+      font-size: 14px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .segment:active { background: var(--elevated); }
+    .segment.active {
+      background: var(--highlight-bg);
+      border-left-color: var(--highlight-border);
+    }
+
+    /* ── Input Panel ── */
+    #input-panel {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 14px 16px;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+    }
+    #input-panel.active { display: flex; }
+
+    #text-input {
+      flex: 1;
+      min-height: 180px;
+      background: var(--elevated);
+      border: 1px solid #333;
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 12px;
+      resize: none;
+      outline: none;
+      -webkit-appearance: none;
+    }
+    #text-input:focus { border-color: var(--accent); }
+    #text-input::placeholder { color: var(--muted); }
+
+    #btn-load {
+      width: 100%;
+      padding: 15px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      flex-shrink: 0;
+    }
+    #btn-load:active { opacity: 0.82; }
+
+    /* ── Controls ── */
+    #controls {
+      background: var(--card);
+      border-top: 1px solid var(--elevated);
+      padding: 12px 16px;
+      padding-bottom: calc(12px + var(--safe-bottom));
+      flex-shrink: 0;
+    }
+
+    #progress-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 11px;
+    }
+    #progress-bar-track {
+      flex: 1;
+      height: 4px;
+      background: var(--elevated);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #progress-bar-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.25s;
+    }
+    #progress-text {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+      min-width: 56px;
+      text-align: right;
+    }
+
+    #speed-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    #speed-label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    #speed-slider {
+      flex: 1;
+      -webkit-appearance: none;
+      height: 4px;
+      background: var(--elevated);
+      border-radius: 2px;
+      outline: none;
+    }
+    #speed-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    #speed-display {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent-light);
+      min-width: 38px;
+      text-align: right;
+    }
+
+    #btn-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .btn {
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.1s, opacity 0.2s;
+      flex-shrink: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn:active { transform: scale(0.91); }
+    .btn:disabled { opacity: 0.35; pointer-events: none; }
+
+    #btn-play {
+      width: 74px;
+      height: 74px;
+      background: var(--accent);
+      font-size: 28px;
+      color: white;
+      box-shadow: 0 4px 16px rgba(124, 58, 237, 0.45);
+    }
+    #btn-stop {
+      width: 54px;
+      height: 54px;
+      background: var(--elevated);
+      font-size: 20px;
+      color: var(--danger);
+    }
+    #btn-prev, #btn-next {
+      width: 54px;
+      height: 54px;
+      background: var(--elevated);
+      font-size: 20px;
+      color: var(--text);
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      bottom: calc(160px + var(--safe-bottom));
+      left: 50%;
+      transform: translateX(-50%) translateY(12px);
+      background: rgba(37, 37, 64, 0.95);
+      color: var(--text);
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-size: 13px;
+      opacity: 0;
+      transition: opacity 0.25s, transform 0.25s;
+      pointer-events: none;
+      white-space: nowrap;
+      z-index: 100;
+      backdrop-filter: blur(8px);
+    }
+    #toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <div id="header">
+    <span id="app-title">🎧 ObsTTS</span>
+    <span id="note-title">共有またはテキストを貼り付けて開始</span>
+  </div>
+
+  <div id="tabs">
+    <div class="tab active" data-tab="preview">読み上げ</div>
+    <div class="tab" data-tab="input">テキスト入力</div>
+  </div>
+
+  <div id="preview-panel" class="active">
+    <div id="empty-state">
+      <span class="icon">🎧</span>
+      Obsidianでノートを開き<br>
+      「共有」→「ObsTTS」を選択<br>
+      <br>
+      または「テキスト入力」タブから<br>
+      貼り付けて読み上げ
+    </div>
+    <div id="segments-container"></div>
+  </div>
+
+  <div id="input-panel">
+    <textarea id="text-input" placeholder="ここにMarkdownテキストを貼り付けてください...&#10;&#10;Obsidianのノート、Discordのメッセージなど何でもOKです。URLやMarkdown記号は自動で除去します。"></textarea>
+    <button id="btn-load">読み上げ開始</button>
+  </div>
+
+  <div id="controls">
+    <div id="progress-row">
+      <div id="progress-bar-track">
+        <div id="progress-bar-fill"></div>
+      </div>
+      <div id="progress-text">0 / 0</div>
+    </div>
+    <div id="speed-row">
+      <span id="speed-label">速度</span>
+      <input type="range" id="speed-slider" min="10" max="20" step="1" value="12">
+      <span id="speed-display">1.2x</span>
+    </div>
+    <div id="btn-row">
+      <button class="btn" id="btn-prev">⏮</button>
+      <button class="btn" id="btn-play">▶</button>
+      <button class="btn" id="btn-stop">⏹</button>
+      <button class="btn" id="btn-next">⏭</button>
+    </div>
+  </div>
+
+</div>
+<div id="toast"></div>
+
+<script>
+// ============================================================
+// MARKDOWN PREPROCESSOR
+// Handles: 政治学習ノート / ニュースノート / リサーチノート
+// ============================================================
+function preprocessMarkdown(raw) {
+  let t = raw;
+
+  // YAMLフロントマター
+  t = t.replace(/^---[\s\S]*?---\s*\n/, '');
+
+  // HTMLブロック（<details> quiz等）
+  t = t.replace(/<details[\s\S]*?<\/details>/gi, '');
+  t = t.replace(/<!--[\s\S]*?-->/g, '');
+  t = t.replace(/<[^>]+>/g, '');
+
+  // コードブロック
+  t = t.replace(/```[\s\S]*?```/g, '');
+  t = t.replace(/`[^`\n]+`/g, '');
+
+  // URL（ベアURL）
+  t = t.replace(/https?:\/\/[^\s\)\]>「」。、）\n]+/g, '');
+
+  // Markdownリンク [text](url) → text
+  t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+
+  // Wikiリンク [[display|link]] or [[link]]
+  t = t.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2');
+  t = t.replace(/\[\[([^\]]+)\]\]/g, (_, l) => l.replace(/\/$/, ''));
+
+  // 引用番号 [1][2]
+  t = t.replace(/\[\d+\]/g, '');
+
+  // ハッシュタグ行（ニュースノートで多用）
+  t = t.replace(/^#[^\s#][^\n]*$/gm, '');
+  t = t.replace(/ #[\w぀-鿿゠-ヿ一-鿿]+/g, '');
+
+  // ヘッダー記号除去（テキストは残す）
+  t = t.replace(/^#{1,6}\s+(.+)$/gm, '$1');
+
+  // 太字・斜体
+  t = t.replace(/\*\*\*([^*\n]+)\*\*\*/g, '$1');
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+  t = t.replace(/\*([^*\n]+)\*/g, '$1');
+  t = t.replace(/__([^_\n]+)__/g, '$1');
+  t = t.replace(/_([^_\n]+)_/g, '$1');
+
+  // 引用ブロック
+  t = t.replace(/^>\s*/gm, '');
+
+  // テーブル → セル内容を読点でつなぐ
+  t = t.replace(/^\|(.+)\|$/gm, (_, cells) =>
+    cells.split('|')
+      .map(c => c.trim())
+      .filter(c => c && !/^[-:\s]+$/.test(c))
+      .join('、')
+  );
+
+  // 区切り線
+  t = t.replace(/^[-*_]{3,}\s*$/gm, '');
+
+  // リスト記号除去（テキストは残す）
+  t = t.replace(/^[\-\*\+]\s+/gm, '');
+  t = t.replace(/^\d+\.\s+/gm, '');
+
+  // 余白整理
+  t = t.replace(/\n{3,}/g, '\n\n');
+  return t.trim();
+}
+
+// ============================================================
+// TTS ENGINE
+// ============================================================
+class TTSEngine {
+  constructor() {
+    this.segments = [];
+    this.currentIndex = 0;
+    this.isPlaying = false;
+    this.rate = 1.2;
+    this.onSegmentChange = null;
+    this.onEnd = null;
+    this._voices = [];
+    this._initVoices();
+  }
+
+  _initVoices() {
+    const load = () => { this._voices = window.speechSynthesis.getVoices(); };
+    load();
+    window.speechSynthesis.addEventListener('voiceschanged', load);
+  }
+
+  _jaVoice() {
+    return this._voices.find(v => v.lang === 'ja-JP' && v.localService)
+        || this._voices.find(v => v.lang === 'ja-JP')
+        || this._voices.find(v => v.lang.startsWith('ja'))
+        || null;
+  }
+
+  _buildSegments(text) {
+    this.segments = [];
+    for (const para of text.split(/\n{2,}/)) {
+      const p = para.trim();
+      if (!p) continue;
+      if (p.length <= 250) {
+        this.segments.push(p);
+      } else {
+        // 長い段落は文末で分割
+        for (const s of p.split(/(?<=[。！？])\s*/)) {
+          if (s.trim()) this.segments.push(s.trim());
+        }
+      }
+    }
+  }
+
+  load(cleanText) {
+    this.stop();
+    this._buildSegments(cleanText);
+    this.currentIndex = 0;
+  }
+
+  play() {
+    if (this.isPlaying || !this.segments.length) return;
+    if (this.currentIndex >= this.segments.length) this.currentIndex = 0;
+    this.isPlaying = true;
+    this._speak(this.currentIndex);
+  }
+
+  _speak(idx) {
+    if (idx >= this.segments.length) {
+      this.isPlaying = false;
+      this.currentIndex = 0;
+      if (this.onSegmentChange) this.onSegmentChange(-1);
+      if (this.onEnd) this.onEnd();
+      return;
+    }
+
+    this.currentIndex = idx;
+    if (this.onSegmentChange) this.onSegmentChange(idx);
+
+    const utt = new SpeechSynthesisUtterance(this.segments[idx]);
+    utt.lang = 'ja-JP';
+    utt.rate = this.rate;
+    utt.pitch = 1.0;
+    utt.volume = 1.0;
+    const v = this._jaVoice();
+    if (v) utt.voice = v;
+
+    utt.onend = () => { if (this.isPlaying) this._speak(idx + 1); };
+    utt.onerror = e => {
+      if (e.error !== 'interrupted' && e.error !== 'canceled') {
+        if (this.isPlaying) this._speak(idx + 1);
+      }
+    };
+
+    window.speechSynthesis.speak(utt);
+  }
+
+  pause() {
+    if (!this.isPlaying) return;
+    this.isPlaying = false;
+    window.speechSynthesis.cancel();
+  }
+
+  stop() {
+    this.isPlaying = false;
+    this.currentIndex = 0;
+    window.speechSynthesis.cancel();
+    if (this.onSegmentChange) this.onSegmentChange(-1);
+  }
+
+  prev() {
+    const idx = Math.max(0, this.currentIndex - 1);
+    const wasPlaying = this.isPlaying;
+    window.speechSynthesis.cancel();
+    this.isPlaying = false;
+    this.currentIndex = idx;
+    if (this.onSegmentChange) this.onSegmentChange(idx);
+    if (wasPlaying) { this.isPlaying = true; this._speak(idx); }
+  }
+
+  next() {
+    const idx = Math.min(this.segments.length - 1, this.currentIndex + 1);
+    const wasPlaying = this.isPlaying;
+    window.speechSynthesis.cancel();
+    this.isPlaying = false;
+    this.currentIndex = idx;
+    if (this.onSegmentChange) this.onSegmentChange(idx);
+    if (wasPlaying) { this.isPlaying = true; this._speak(idx); }
+  }
+
+  seekTo(idx) {
+    const wasPlaying = this.isPlaying;
+    window.speechSynthesis.cancel();
+    this.isPlaying = false;
+    this.currentIndex = Math.max(0, Math.min(idx, this.segments.length - 1));
+    if (this.onSegmentChange) this.onSegmentChange(this.currentIndex);
+    if (wasPlaying) { this.isPlaying = true; this._speak(this.currentIndex); }
+  }
+
+  setRate(r) {
+    this.rate = Math.max(1.0, Math.min(2.0, r));
+    if (this.isPlaying) {
+      const idx = this.currentIndex;
+      window.speechSynthesis.cancel();
+      this._speak(idx);
+    }
+  }
+
+  get total() { return this.segments.length; }
+}
+
+// ============================================================
+// INDEXEDDB (Share Target handoff)
+// ============================================================
+function openShareDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('obs-tts-share', 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore('pending');
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = reject;
+  });
+}
+
+async function readAndClearShare() {
+  try {
+    const db = await openShareDB();
+    return new Promise(resolve => {
+      const tx = db.transaction('pending', 'readwrite');
+      const store = tx.objectStore('pending');
+      const req = store.get('latest');
+      req.onsuccess = () => {
+        const data = req.result;
+        if (data) store.delete('latest');
+        tx.oncomplete = () => { db.close(); resolve(data || null); };
+      };
+      req.onerror = () => { db.close(); resolve(null); };
+    });
+  } catch { return null; }
+}
+
+// ============================================================
+// WAKE LOCK
+// ============================================================
+let wakeLock = null;
+async function requestWakeLock() {
+  if ('wakeLock' in navigator) {
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch { /* battery saver etc */ }
+  }
+}
+function releaseWakeLock() {
+  if (wakeLock) { wakeLock.release(); wakeLock = null; }
+}
+
+// ============================================================
+// UI
+// ============================================================
+const tts = new TTSEngine();
+const $ = id => document.getElementById(id);
+
+function showToast(msg, ms = 2200) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), ms);
+}
+
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderSegments(segs) {
+  const container = $('segments-container');
+  const empty = $('empty-state');
+  if (!segs.length) { empty.style.display = 'block'; container.innerHTML = ''; return; }
+  empty.style.display = 'none';
+  container.innerHTML = segs.map((t, i) =>
+    `<div class="segment" data-index="${i}">${escHtml(t)}</div>`
+  ).join('');
+}
+
+function updateHighlight(idx) {
+  document.querySelectorAll('.segment').forEach(s => s.classList.remove('active'));
+  if (idx >= 0) {
+    const el = document.querySelector(`.segment[data-index="${idx}"]`);
+    if (el) {
+      el.classList.add('active');
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+  const total = tts.total;
+  const cur = idx >= 0 ? idx + 1 : 0;
+  $('progress-text').textContent = `${cur} / ${total}`;
+  $('progress-bar-fill').style.width = total > 0 ? `${(cur / total * 100).toFixed(1)}%` : '0%';
+}
+
+function updatePlayBtn() {
+  $('btn-play').textContent = tts.isPlaying ? '⏸' : '▶';
+}
+
+function loadText(raw, title = '') {
+  const clean = preprocessMarkdown(raw);
+  tts.load(clean);
+  renderSegments(tts.segments);
+  updateHighlight(-1);
+  updatePlayBtn();
+  if (title) $('note-title').textContent = title.replace(/\.md$/, '');
+  switchTab('preview');
+  showToast(`${tts.total}段落を読み込みました`);
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === name)
+  );
+  $('preview-panel').classList.toggle('active', name === 'preview');
+  $('input-panel').classList.toggle('active', name === 'input');
+}
+
+// TTS callbacks
+tts.onSegmentChange = idx => { updateHighlight(idx); updatePlayBtn(); };
+tts.onEnd = () => { updatePlayBtn(); releaseWakeLock(); showToast('読み上げ完了 ✓'); };
+
+// Buttons
+$('btn-play').addEventListener('click', () => {
+  if (!tts.total) { showToast('テキストを読み込んでください'); return; }
+  if (tts.isPlaying) { tts.pause(); releaseWakeLock(); }
+  else { tts.play(); requestWakeLock(); }
+  updatePlayBtn();
+});
+$('btn-stop').addEventListener('click', () => {
+  tts.stop(); releaseWakeLock(); updatePlayBtn(); updateHighlight(-1);
+});
+$('btn-prev').addEventListener('click', () => { if (tts.total) tts.prev(); });
+$('btn-next').addEventListener('click', () => { if (tts.total) tts.next(); });
+
+$('speed-slider').addEventListener('input', e => {
+  const r = e.target.value / 10;
+  $('speed-display').textContent = r.toFixed(1) + 'x';
+  tts.setRate(r);
+});
+
+$('btn-load').addEventListener('click', () => {
+  const text = $('text-input').value.trim();
+  if (!text) { showToast('テキストを入力してください'); return; }
+  loadText(text);
+  $('text-input').value = '';
+});
+
+document.querySelectorAll('.tab').forEach(tab =>
+  tab.addEventListener('click', () => switchTab(tab.dataset.tab))
+);
+
+$('segments-container').addEventListener('click', e => {
+  const seg = e.target.closest('.segment');
+  if (seg) tts.seekTo(parseInt(seg.dataset.index, 10));
+});
+
+// Android: speechSynthesis sometimes pauses in background — nudge it
+setInterval(() => {
+  if (tts.isPlaying && window.speechSynthesis.paused) {
+    window.speechSynthesis.resume();
+  }
+}, 10000);
+
+// ============================================================
+// SERVICE WORKER + SHARE TARGET
+// ============================================================
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js')
+    .then(() => console.log('SW registered'))
+    .catch(e => console.error('SW error:', e));
+
+  navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data?.type === 'SHARE_TARGET') {
+      loadText(e.data.text || e.data.url || '', e.data.title);
+    }
+  });
+}
+
+window.addEventListener('load', async () => {
+  const data = await readAndClearShare();
+  if (data && (data.text || data.url)) {
+    loadText(data.text || data.url, data.title);
+  }
+});
+</script>
+</body>
+</html>
