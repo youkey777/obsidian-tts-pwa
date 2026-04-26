@@ -347,6 +347,15 @@
     }
 
     /* ── Toast ── */
+    .segment-heading {
+      border-top: 2px solid rgba(124,58,237,0.5);
+      color: var(--accent-light);
+      font-weight: 600;
+      padding-top: 10px;
+      margin-top: 4px;
+      letter-spacing: 0.3px;
+    }
+
     #voice-row {
       display: flex;
       align-items: center;
@@ -502,7 +511,7 @@ function preprocessMarkdown(raw) {
   t = t.replace(/ #[\w぀-鿿゠-ヿ一-鿿]+/g, '');
 
   // ヘッダー記号除去（テキストは残す）
-  t = t.replace(/^#{1,6}\s+(.+)$/gm, '$1');
+  t = t.replace(/^#{1,6}\s+(.+)$/gm, (_, h) => '\n\n\x02' + h + '\n\n');
 
   // 太字・斜体
   t = t.replace(/\*\*\*([^*\n]+)\*\*\*/g, '$1');
@@ -540,9 +549,11 @@ function preprocessMarkdown(raw) {
 class TTSEngine {
   constructor() {
     this.segments = [];
+    this.segmentTypes = [];
     this.currentIndex = 0;
     this.isPlaying = false;
     this.rate = 1.2;
+    this._lastCharIndex = 0;
     this.onSegmentChange = null;
     this.onEnd = null;
     this._voices = [];
@@ -582,15 +593,21 @@ class TTSEngine {
 
   _buildSegments(text) {
     this.segments = [];
+    this.segmentTypes = [];
     for (const para of text.split(/\n{2,}/)) {
       const p = para.trim();
       if (!p) continue;
-      if (p.length <= 250) {
-        this.segments.push(p);
+      const isHeading = p.charCodeAt(0) === 0x02;
+      const clean = isHeading ? p.slice(1) : p;
+      if (clean.length <= 250) {
+        this.segments.push(clean);
+        this.segmentTypes.push(isHeading ? 'heading' : 'normal');
       } else {
-        // 長い段落は文末で分割
-        for (const s of p.split(/(?<=[。！？])\s*/)) {
-          if (s.trim()) this.segments.push(s.trim());
+        for (const s of clean.split(/(?<=[。！？])\s*/)) {
+          if (s.trim()) {
+            this.segments.push(s.trim());
+            this.segmentTypes.push('normal');
+          }
         }
       }
     }
@@ -609,7 +626,7 @@ class TTSEngine {
     this._speak(this.currentIndex);
   }
 
-  _speak(idx) {
+  _speak(idx, charOffset = 0) {
     if (idx >= this.segments.length) {
       this.isPlaying = false;
       this.currentIndex = 0;
@@ -619,9 +636,11 @@ class TTSEngine {
     }
 
     this.currentIndex = idx;
+    this._lastCharIndex = charOffset;
     if (this.onSegmentChange) this.onSegmentChange(idx);
 
-    const utt = new SpeechSynthesisUtterance(this.segments[idx]);
+    const text = charOffset > 0 ? this.segments[idx].slice(charOffset) : this.segments[idx];
+    const utt = new SpeechSynthesisUtterance(text);
     utt.lang = 'ja-JP';
     utt.rate = this.rate;
     utt.pitch = 1.0;
@@ -629,6 +648,7 @@ class TTSEngine {
     const v = this._jaVoice();
     if (v) utt.voice = v;
 
+    utt.onboundary = e => { this._lastCharIndex = charOffset + (e.charIndex || 0); };
     utt.onend = () => { if (this.isPlaying) this._speak(idx + 1); };
     utt.onerror = e => {
       if (e.error !== 'interrupted' && e.error !== 'canceled') {
@@ -648,6 +668,7 @@ class TTSEngine {
   stop() {
     this.isPlaying = false;
     this.currentIndex = 0;
+    this._lastCharIndex = 0;
     window.speechSynthesis.cancel();
     if (this.onSegmentChange) this.onSegmentChange(-1);
   }
@@ -683,6 +704,12 @@ class TTSEngine {
 
   setRate(r) {
     this.rate = Math.max(1.0, Math.min(2.0, r));
+    if (this.isPlaying) {
+      const idx = this.currentIndex;
+      const offset = this._lastCharIndex;
+      window.speechSynthesis.cancel();
+      this._speak(idx, offset);
+    }
   }
 
   get total() { return this.segments.length; }
@@ -755,9 +782,10 @@ function renderSegments(segs) {
   const empty = $('empty-state');
   if (!segs.length) { empty.style.display = 'block'; container.innerHTML = ''; return; }
   empty.style.display = 'none';
-  container.innerHTML = segs.map((t, i) =>
-    `<div class="segment" data-index="${i}">${escHtml(t)}</div>`
-  ).join('');
+  container.innerHTML = segs.map((t, i) => {
+    const cls = tts.segmentTypes[i] === 'heading' ? 'segment segment-heading' : 'segment';
+    return `<div class="${cls}" data-index="${i}">${escHtml(t)}</div>`;
+  }).join('');
 }
 
 function updateHighlight(idx) {
