@@ -501,6 +501,7 @@
     <button id="btn-test-key" style="background:#1e3a5f; margin-top:6px;">APIキーをテスト</button>
     <button id="btn-reload-app" style="background:#374151; margin-top:6px;">🔄 アプリを再読み込み（キャッシュ更新）</button>
     <div id="cloud-status"></div>
+    <div id="char-usage-display" style="margin-top:12px; padding:10px; background:#1a1a2e; border-radius:8px; font-size:13px; color:#94a3b8;"></div>
   </div>
 
   <div id="controls">
@@ -658,6 +659,7 @@ class TTSEngine {
     const data = await res.json();
     if (data.error) throw new Error(data.error.message);
     this._audioCache.set(text, data.audioContent);
+    addCloudChars(text.length);
     return data.audioContent;
   }
 
@@ -1063,8 +1065,41 @@ document.addEventListener('visibilitychange', () => {
 });
 
 document.querySelectorAll('.tab').forEach(tab =>
-  tab.addEventListener('click', () => switchTab(tab.dataset.tab))
+  tab.addEventListener('click', () => {
+    switchTab(tab.dataset.tab);
+    if (tab.dataset.tab === 'settings') updateCharDisplay();
+  })
 );
+
+// ============================================================
+// CLOUD TTS 文字数カウンター
+// ============================================================
+function getMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function addCloudChars(n) {
+  const key = getMonthKey();
+  const stored = JSON.parse(localStorage.getItem('obs-tts-char-usage') || '{}');
+  stored[key] = (stored[key] || 0) + n;
+  localStorage.setItem('obs-tts-char-usage', JSON.stringify(stored));
+  updateCharDisplay();
+}
+
+function updateCharDisplay() {
+  const el = $('char-usage-display');
+  if (!el) return;
+  const key = getMonthKey();
+  const stored = JSON.parse(localStorage.getItem('obs-tts-char-usage') || '{}');
+  const used = stored[key] || 0;
+  const limit = 1000000;
+  const pct = (used / limit * 100).toFixed(1);
+  const bar = '█'.repeat(Math.round(used / limit * 20)).padEnd(20, '░');
+  el.innerHTML = `<div style="margin-bottom:4px;">今月の使用文字数（${key}）</div>
+<div style="font-family:monospace; color:#7c3aed;">${bar}</div>
+<div style="margin-top:4px; color:${used > 800000 ? '#f87171' : '#e2e8f0'};">${used.toLocaleString()} / 1,000,000 文字（${pct}%）</div>`;
+}
 
 // ============================================================
 // CLOUD TTS SETTINGS
