@@ -447,6 +447,7 @@
   <div id="header">
     <span id="app-title">🎧 ObsTTS</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
+    <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
 
   <div id="tabs">
@@ -966,8 +967,20 @@ function loadText(raw, title = '') {
   updateHighlight(-1);
   updatePlayBtn();
   if (title) $('note-title').textContent = title.replace(/\.md$/, '');
+  $('btn-clear').style.display = 'block';
   switchTab('preview');
   showToast(`${tts.total}段落を読み込みました`);
+}
+
+function clearText() {
+  tts.stop();
+  tts.segments = [];
+  tts.segmentTypes = [];
+  renderSegments([]);
+  updateHighlight(-1);
+  updatePlayBtn();
+  $('note-title').textContent = '共有またはテキストを貼り付けて開始';
+  $('btn-clear').style.display = 'none';
 }
 
 function switchTab(name) {
@@ -990,6 +1003,7 @@ $('btn-play').addEventListener('click', () => {
   else { tts.play(); requestWakeLock(); }
   updatePlayBtn();
 });
+$('btn-clear').addEventListener('click', clearText);
 $('btn-stop').addEventListener('click', () => {
   tts.stop(); releaseWakeLock(); updatePlayBtn(); updateHighlight(-1);
 });
