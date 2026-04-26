@@ -347,6 +347,23 @@
     }
 
     /* ── Toast ── */
+    #voice-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px 8px;
+    }
+    #voice-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+    #voice-select {
+      flex: 1;
+      background: var(--elevated);
+      color: var(--text);
+      border: 1px solid rgba(124,58,237,0.3);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+
     #toast {
       position: fixed;
       bottom: calc(160px + var(--safe-bottom));
@@ -418,6 +435,10 @@
       <input type="range" id="speed-slider" min="10" max="20" step="1" value="12">
       <span id="speed-display">1.2x</span>
     </div>
+    <div id="voice-row">
+      <span id="voice-label">音声</span>
+      <select id="voice-select"><option>読み込み中…</option></select>
+    </div>
     <div id="btn-row">
       <button class="btn" id="btn-prev">⏮</button>
       <button class="btn" id="btn-play">▶</button>
@@ -436,6 +457,20 @@
 // ============================================================
 function preprocessMarkdown(raw) {
   let t = raw;
+
+  // ニュースノートのソースセクション全体を削除（### ソース 以降を次の見出しまで除去）
+  {
+    const lines = t.split('\n');
+    let inSource = false;
+    t = lines.filter(line => {
+      if (/^#{1,6}\s+ソース\s*$/.test(line)) { inSource = true; return false; }
+      if (inSource && /^#{1,6}\s/.test(line)) inSource = false;
+      return !inSource;
+    }).join('\n');
+  }
+
+  // ニュースノートのメタデータ行を削除（媒体・掲載・元タイトル・元記事・ソース・記事 ＋ コロン）
+  t = t.replace(/^[^\n]*(?:\*\*)?(?:媒体|元タイトル|掲載|元記事|ソース|記事)(?:\*\*)?[：:][^\n]*$/gm, '');
 
   // YAMLフロントマター
   t = t.replace(/^---[\s\S]*?---\s*\n/, '');
@@ -515,15 +550,33 @@ class TTSEngine {
   }
 
   _initVoices() {
-    const load = () => { this._voices = window.speechSynthesis.getVoices(); };
+    const load = () => {
+      this._voices = window.speechSynthesis.getVoices();
+      this._updateVoiceSelect();
+    };
     load();
     window.speechSynthesis.addEventListener('voiceschanged', load);
   }
 
+  _updateVoiceSelect() {
+    const sel = document.getElementById('voice-select');
+    if (!sel) return;
+    const jaVoices = this._voices.filter(v => v.lang.startsWith('ja'));
+    if (!jaVoices.length) return;
+    sel.innerHTML = jaVoices.map((v, i) =>
+      `<option value="${i}">${v.name}${v.localService ? '' : ' (ネット)'}</option>`
+    ).join('');
+    const preferred = jaVoices.findIndex(v => v.name.includes('Google'));
+    if (preferred >= 0) sel.value = String(preferred);
+  }
+
   _jaVoice() {
+    const sel = document.getElementById('voice-select');
+    const idx = sel ? parseInt(sel.value, 10) : NaN;
+    const jaVoices = this._voices.filter(v => v.lang.startsWith('ja'));
+    if (!isNaN(idx) && jaVoices[idx]) return jaVoices[idx];
     return this._voices.find(v => v.lang === 'ja-JP' && v.localService)
         || this._voices.find(v => v.lang === 'ja-JP')
-        || this._voices.find(v => v.lang.startsWith('ja'))
         || null;
   }
 
@@ -630,11 +683,6 @@ class TTSEngine {
 
   setRate(r) {
     this.rate = Math.max(1.0, Math.min(2.0, r));
-    if (this.isPlaying) {
-      const idx = this.currentIndex;
-      window.speechSynthesis.cancel();
-      this._speak(idx);
-    }
   }
 
   get total() { return this.segments.length; }
