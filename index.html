@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v26</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v27</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -703,6 +703,7 @@ class TTSEngine {
     this._voicevoxSpeaker = '3';
     this._audioCache = new Map();
     this._inFlight = new Map();
+    this._controllers = new Set();
     this._currentAudio = null;
     this._sharedAudioCtx = null;
     this._initVoices();
@@ -727,29 +728,42 @@ class TTSEngine {
     if (!key) { this._audioCache.clear(); this._inFlight.clear(); }
   }
 
+  _abortAll() {
+    this._controllers.forEach(c => c.abort());
+    this._controllers.clear();
+    this._inFlight.clear();
+  }
+
   async _fetchCloudAudio(text) {
     if (this._audioCache.has(text)) return this._audioCache.get(text);
     if (this._inFlight.has(text)) return this._inFlight.get(text);
+    const controller = new AbortController();
+    this._controllers.add(controller);
     const promise = (async () => {
-      const result = this._ttsProvider === 'openai'
-        ? await this._fetchOpenAI(text)
-        : this._ttsProvider === 'voicevox'
-          ? await this._fetchVoicevox(text)
-          : await this._fetchGemini(text);
-      this._audioCache.set(text, result);
-      this._inFlight.delete(text);
-      addCloudChars(text.length);
-      return result;
+      try {
+        const result = this._ttsProvider === 'openai'
+          ? await this._fetchOpenAI(text, controller.signal)
+          : this._ttsProvider === 'voicevox'
+            ? await this._fetchVoicevox(text, controller.signal)
+            : await this._fetchGemini(text, controller.signal);
+        this._audioCache.set(text, result);
+        addCloudChars(text.length);
+        return result;
+      } finally {
+        this._inFlight.delete(text);
+        this._controllers.delete(controller);
+      }
     })();
     this._inFlight.set(text, promise);
     return promise;
   }
 
-  async _fetchGemini(text) {
+  async _fetchGemini(text, signal) {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${this._cloudKey}`,
       {
         method: 'POST',
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text }] }],
@@ -771,13 +785,13 @@ class TTSEngine {
     return { data: part.inlineData.data, mimeType: part.inlineData.mimeType || 'audio/pcm;rate=24000' };
   }
 
-  async _fetchVoicevox(text) {
+  async _fetchVoicevox(text, signal) {
     const params = new URLSearchParams({
       text,
       speaker: this._voicevoxSpeaker || '3',
       key: this._cloudKey
     });
-    const res = await fetch(`https://api.su-shiki.com/v2/voicevox/audio/?${params}`);
+    const res = await fetch(`https://api.su-shiki.com/v2/voicevox/audio/?${params}`, { signal });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.errorMessage || `HTTP ${res.status}`);
@@ -789,10 +803,11 @@ class TTSEngine {
     return { data: btoa(binary), mimeType: 'audio/wav' };
   }
 
-  async _fetchOpenAI(text) {
+  async _fetchOpenAI(text, signal) {
     const speed = Math.min(4.0, Math.max(0.25, this.rate));
     const res = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
+      signal,
       headers: {
         'Authorization': `Bearer ${this._cloudKey}`,
         'Content-Type': 'application/json'
@@ -875,6 +890,7 @@ class TTSEngine {
       if (this.isPlaying) this._speakCloud(idx + 1);
     } catch (e) {
       if (this.onWaiting) this.onWaiting(false);
+      if (e.name === 'AbortError') return;
       this.isPlaying = false;
       if (this.onSegmentChange) this.onSegmentChange(-1);
       const msg = e.message || String(e);
@@ -941,10 +957,12 @@ class TTSEngine {
     this.currentIndex = 0;
   }
 
-  prefetchFirst() {
+  prefetchFirst() { this._prefetchFrom(0); }
+
+  _prefetchFrom(base) {
     if (!this._cloudKey || !this.segments.length) return;
     const seg = this.segments;
-    const f = i => { if (i < seg.length) this._fetchCloudAudio(seg[i]).catch(() => {}); };
+    const f = i => { if (base + i < seg.length) this._fetchCloudAudio(seg[base + i]).catch(() => {}); };
     f(0);
     setTimeout(() => f(1), 200);
     setTimeout(() => f(2), 500);
@@ -1051,9 +1069,11 @@ class TTSEngine {
     const wasPlaying = this.isPlaying;
     this.isPlaying = false;
     this._cancelAll();
+    this._abortAll();
     this.currentIndex = Math.max(0, Math.min(idx, this.segments.length - 1));
     if (this.onSegmentChange) this.onSegmentChange(this.currentIndex);
-    if (wasPlaying) { this.isPlaying = true; this._speak(this.currentIndex); }
+    this._prefetchFrom(this.currentIndex);
+    if (wasPlaying) { this.isPlaying = true; if (this._cloudKey) this._ensureAudioCtx(); this._speak(this.currentIndex); }
   }
 
   setRate(r) {
