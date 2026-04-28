@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v22</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v23</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -818,8 +818,8 @@ class TTSEngine {
     }
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    // 次の5セグメントを先読み（APIレスポンス遅延を吸収）
-    for (let i = 1; i <= 5; i++) {
+    // 次の10セグメントを先読み（APIレスポンス遅延を吸収）
+    for (let i = 1; i <= 10; i++) {
       if (idx + i < this.segments.length) {
         this._fetchCloudAudio(this.segments[idx + i]).catch(() => {});
       }
@@ -934,7 +934,7 @@ class TTSEngine {
     this.currentIndex = 0;
   }
 
-  prefetchFirst(n = 5) {
+  prefetchFirst(n = 10) {
     if (!this._cloudKey) return;
     for (let i = 0; i < Math.min(n, this.segments.length); i++) {
       this._fetchCloudAudio(this.segments[i]).catch(() => {});
@@ -1156,7 +1156,7 @@ function updatePlayBtn() {
 function loadText(raw, title = '') {
   const clean = preprocessMarkdown(raw);
   tts.load(clean);
-  tts.prefetchFirst(5); // 最初の5段落を即プリフェッチ
+  tts.prefetchFirst(10); // 最初の10段落を即プリフェッチ
   renderSegments(tts.segments);
   updateHighlight(-1);
   updatePlayBtn();
