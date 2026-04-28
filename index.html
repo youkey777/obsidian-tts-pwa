@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v21</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v22</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -565,6 +565,7 @@
       <button class="btn" id="btn-stop">⏹</button>
       <button class="btn" id="btn-next">⏭</button>
     </div>
+    <div id="loading-indicator" style="display:none; text-align:center; font-size:12px; color:#a78bfa; padding:4px 0; letter-spacing:0.02em;">⏳ 音声を準備中...</div>
   </div>
 
 </div>
@@ -693,6 +694,7 @@ class TTSEngine {
     this._lastCharIndex = 0;
     this.onSegmentChange = null;
     this.onEnd = null;
+    this.onWaiting = null;
     this._voices = [];
     this._cloudKey = '';
     this._cloudVoice = 'Kore';
@@ -816,14 +818,17 @@ class TTSEngine {
     }
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    // 次の3セグメントを先読み（Gemini APIのレスポンス遅延を吸収）
-    for (let i = 1; i <= 3; i++) {
+    // 次の5セグメントを先読み（APIレスポンス遅延を吸収）
+    for (let i = 1; i <= 5; i++) {
       if (idx + i < this.segments.length) {
         this._fetchCloudAudio(this.segments[idx + i]).catch(() => {});
       }
     }
     try {
+      const isCached = this._audioCache.has(this.segments[idx]);
+      if (!isCached && this.onWaiting) this.onWaiting(true);
       const { data: b64, mimeType } = await this._fetchCloudAudio(this.segments[idx]);
+      if (this.onWaiting) this.onWaiting(false);
       if (!this.isPlaying) return;
       // audio/pcm と audio/L16 の両方をPCMとして扱う
       const isPcm = mimeType && (mimeType.includes('pcm') || mimeType.toLowerCase().includes('l16'));
@@ -862,6 +867,7 @@ class TTSEngine {
       }
       if (this.isPlaying) this._speakCloud(idx + 1);
     } catch (e) {
+      if (this.onWaiting) this.onWaiting(false);
       this.isPlaying = false;
       if (this.onSegmentChange) this.onSegmentChange(-1);
       const msg = e.message || String(e);
@@ -928,7 +934,7 @@ class TTSEngine {
     this.currentIndex = 0;
   }
 
-  prefetchFirst(n = 3) {
+  prefetchFirst(n = 5) {
     if (!this._cloudKey) return;
     for (let i = 0; i < Math.min(n, this.segments.length); i++) {
       this._fetchCloudAudio(this.segments[i]).catch(() => {});
@@ -1150,7 +1156,7 @@ function updatePlayBtn() {
 function loadText(raw, title = '') {
   const clean = preprocessMarkdown(raw);
   tts.load(clean);
-  tts.prefetchFirst(3); // 最初の3段落を即プリフェッチ
+  tts.prefetchFirst(5); // 最初の5段落を即プリフェッチ
   renderSegments(tts.segments);
   updateHighlight(-1);
   updatePlayBtn();
@@ -1183,6 +1189,7 @@ function switchTab(name) {
 // TTS callbacks
 tts.onSegmentChange = idx => { updateHighlight(idx); updatePlayBtn(); };
 tts.onEnd = () => { updatePlayBtn(); releaseWakeLock(); showToast('読み上げ完了 ✓'); };
+tts.onWaiting = (waiting) => { const el = $('loading-indicator'); if (el) el.style.display = waiting ? '' : 'none'; };
 
 // Buttons
 $('btn-play').addEventListener('click', () => {
