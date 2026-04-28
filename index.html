@@ -660,8 +660,18 @@ class TTSEngine {
     this._cloudVoice = 'Kore';
     this._audioCache = new Map();
     this._currentAudio = null;
-    this._webAudioCtx = null;
+    this._sharedAudioCtx = null;
     this._initVoices();
+  }
+
+  // ユーザーアクション内で呼び出し、AudioContextをrunning状態にする（モバイル対応）
+  _ensureAudioCtx() {
+    if (!this._sharedAudioCtx || this._sharedAudioCtx.state === 'closed') {
+      this._sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (this._sharedAudioCtx.state === 'suspended') {
+      this._sharedAudioCtx.resume().catch(() => {});
+    }
   }
 
   setCloudKey(key, voice) {
@@ -719,7 +729,14 @@ class TTSEngine {
       const isPcm = mimeType && mimeType.includes('pcm');
       const sampleRate = parseInt(mimeType?.match(/rate=(\d+)/)?.[1] || '24000');
       if (isPcm) {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+        // 事前にplay()で作成済みのコンテキストを使用（ユーザーアクションのコンテキストを保持）
+        if (!this._sharedAudioCtx || this._sharedAudioCtx.state === 'closed') {
+          this._sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (this._sharedAudioCtx.state === 'suspended') {
+          await this._sharedAudioCtx.resume();
+        }
+        const ctx = this._sharedAudioCtx;
         const pcm = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
         const samples = pcm.length / 2;
         const audioBuf = ctx.createBuffer(1, samples, sampleRate);
@@ -730,9 +747,8 @@ class TTSEngine {
         source.buffer = audioBuf;
         source.playbackRate.value = this.rate;
         source.connect(ctx.destination);
-        this._webAudioCtx = ctx;
         await new Promise((resolve, reject) => {
-          source.onended = () => { this._webAudioCtx = null; ctx.close(); resolve(); };
+          source.onended = resolve;
           try { source.start(); } catch(e) { reject(e); }
         });
       } else {
@@ -816,6 +832,8 @@ class TTSEngine {
     if (this.isPlaying || !this.segments.length) return;
     if (this.currentIndex >= this.segments.length) this.currentIndex = 0;
     this.isPlaying = true;
+    // ユーザーアクション（タップ）の直後にAudioContextを起動状態にする（モバイルAutoplay Policy対応）
+    if (this._cloudKey) this._ensureAudioCtx();
     if (this._cloudKey && this._currentAudio?.paused) {
       this._currentAudio.play();
       this._currentAudio.onended = () => { if (this.isPlaying) this._speakCloud(this.currentIndex + 1); };
@@ -863,6 +881,10 @@ class TTSEngine {
     this.isPlaying = false;
     if (this._cloudKey) {
       if (this._currentAudio) this._currentAudio.pause();
+      // WebAudio再生中はsuspend（次回resume()で再開できるよう閉じない）
+      if (this._sharedAudioCtx?.state === 'running') {
+        this._sharedAudioCtx.suspend().catch(() => {});
+      }
     } else {
       window.speechSynthesis.cancel();
     }
@@ -871,7 +893,7 @@ class TTSEngine {
   _cancelAll() {
     window.speechSynthesis.cancel();
     if (this._currentAudio) { this._currentAudio.pause(); this._currentAudio = null; }
-    if (this._webAudioCtx) { try { this._webAudioCtx.close(); } catch(e) {} this._webAudioCtx = null; }
+    // _sharedAudioCtxは閉じない（次のplay()で再利用するため）
   }
 
   stop() {
@@ -889,7 +911,7 @@ class TTSEngine {
     this._cancelAll();
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    if (wasPlaying) { this.isPlaying = true; this._speak(idx); }
+    if (wasPlaying) { this.isPlaying = true; if (this._cloudKey) this._ensureAudioCtx(); this._speak(idx); }
   }
 
   next() {
@@ -899,7 +921,7 @@ class TTSEngine {
     this._cancelAll();
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    if (wasPlaying) { this.isPlaying = true; this._speak(idx); }
+    if (wasPlaying) { this.isPlaying = true; if (this._cloudKey) this._ensureAudioCtx(); this._speak(idx); }
   }
 
   seekTo(idx) {
