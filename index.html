@@ -726,7 +726,8 @@ class TTSEngine {
     try {
       const { data: b64, mimeType } = await this._fetchCloudAudio(this.segments[idx]);
       if (!this.isPlaying) return;
-      const isPcm = mimeType && mimeType.includes('pcm');
+      // audio/pcm と audio/L16 の両方をPCMとして扱う
+      const isPcm = mimeType && (mimeType.includes('pcm') || mimeType.toLowerCase().includes('l16'));
       const sampleRate = parseInt(mimeType?.match(/rate=(\d+)/)?.[1] || '24000');
       if (isPcm) {
         // 事前にplay()で作成済みのコンテキストを使用（ユーザーアクションのコンテキストを保持）
@@ -765,7 +766,10 @@ class TTSEngine {
       this.isPlaying = false;
       if (this.onSegmentChange) this.onSegmentChange(-1);
       const msg = e.message || String(e);
-      alert('Cloud TTS エラー:\n' + msg + '\n\n設定タブの「APIキーをテスト」で詳細を確認してください。');
+      const cached = this._audioCache.get(this.segments[idx]);
+      const mt = cached?.mimeType || '不明';
+      const ctxState = this._sharedAudioCtx?.state || 'なし';
+      alert('Cloud TTS エラー\n種別: ' + (e.name || '不明') + '\n内容: ' + msg + '\nmimeType: ' + mt + '\nAudioCtx: ' + ctxState);
     }
   }
 
