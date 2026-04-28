@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v24</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v25</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -702,6 +702,7 @@ class TTSEngine {
     this._openaiVoice = 'nova';
     this._voicevoxSpeaker = '3';
     this._audioCache = new Map();
+    this._inFlight = new Map();
     this._currentAudio = null;
     this._sharedAudioCtx = null;
     this._initVoices();
@@ -723,19 +724,25 @@ class TTSEngine {
     if (voice) this._cloudVoice = voice;
     if (openaiVoice) this._openaiVoice = openaiVoice;
     if (voicevoxSpeaker) this._voicevoxSpeaker = voicevoxSpeaker;
-    if (!key) this._audioCache.clear();
+    if (!key) { this._audioCache.clear(); this._inFlight.clear(); }
   }
 
   async _fetchCloudAudio(text) {
     if (this._audioCache.has(text)) return this._audioCache.get(text);
-    const result = this._ttsProvider === 'openai'
-      ? await this._fetchOpenAI(text)
-      : this._ttsProvider === 'voicevox'
-        ? await this._fetchVoicevox(text)
-        : await this._fetchGemini(text);
-    this._audioCache.set(text, result);
-    addCloudChars(text.length);
-    return result;
+    if (this._inFlight.has(text)) return this._inFlight.get(text);
+    const promise = (async () => {
+      const result = this._ttsProvider === 'openai'
+        ? await this._fetchOpenAI(text)
+        : this._ttsProvider === 'voicevox'
+          ? await this._fetchVoicevox(text)
+          : await this._fetchGemini(text);
+      this._audioCache.set(text, result);
+      this._inFlight.delete(text);
+      addCloudChars(text.length);
+      return result;
+    })();
+    this._inFlight.set(text, promise);
+    return promise;
   }
 
   async _fetchGemini(text) {
@@ -818,8 +825,8 @@ class TTSEngine {
     }
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    // 次の10セグメントを先読み（APIレスポンス遅延を吸収）
-    for (let i = 1; i <= 10; i++) {
+    // 次の6セグメントを先読み（重複排除済みのため実効リクエスト数は最小）
+    for (let i = 1; i <= 6; i++) {
       if (idx + i < this.segments.length) {
         this._fetchCloudAudio(this.segments[idx + i]).catch(() => {});
       }
