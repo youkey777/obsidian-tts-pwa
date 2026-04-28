@@ -720,8 +720,11 @@ class TTSEngine {
     }
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    if (idx + 1 < this.segments.length) {
-      this._fetchCloudAudio(this.segments[idx + 1]).catch(() => {});
+    // 次の3セグメントを先読み（Gemini APIのレスポンス遅延を吸収）
+    for (let i = 1; i <= 3; i++) {
+      if (idx + i < this.segments.length) {
+        this._fetchCloudAudio(this.segments[idx + i]).catch(() => {});
+      }
     }
     try {
       const { data: b64, mimeType } = await this._fetchCloudAudio(this.segments[idx]);
@@ -830,6 +833,13 @@ class TTSEngine {
     this.stop();
     this._buildSegments(cleanText);
     this.currentIndex = 0;
+  }
+
+  prefetchFirst(n = 3) {
+    if (!this._cloudKey) return;
+    for (let i = 0; i < Math.min(n, this.segments.length); i++) {
+      this._fetchCloudAudio(this.segments[i]).catch(() => {});
+    }
   }
 
   play() {
@@ -1047,6 +1057,7 @@ function updatePlayBtn() {
 function loadText(raw, title = '') {
   const clean = preprocessMarkdown(raw);
   tts.load(clean);
+  tts.prefetchFirst(3); // 最初の3段落を即プリフェッチ
   renderSegments(tts.segments);
   updateHighlight(-1);
   updatePlayBtn();
