@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v27</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v28</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -704,6 +704,7 @@ class TTSEngine {
     this._audioCache = new Map();
     this._inFlight = new Map();
     this._controllers = new Set();
+    this._fetchedUpTo = -1;
     this._currentAudio = null;
     this._sharedAudioCtx = null;
     this._initVoices();
@@ -725,7 +726,7 @@ class TTSEngine {
     if (voice) this._cloudVoice = voice;
     if (openaiVoice) this._openaiVoice = openaiVoice;
     if (voicevoxSpeaker) this._voicevoxSpeaker = voicevoxSpeaker;
-    if (!key) { this._audioCache.clear(); this._inFlight.clear(); }
+    if (!key) { this._audioCache.clear(); this._inFlight.clear(); this._fetchedUpTo = -1; }
   }
 
   _abortAll() {
@@ -840,18 +841,13 @@ class TTSEngine {
     }
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    // 次の6セグメントを先読み（重複排除済みのため実効リクエスト数は最小）
-    for (let i = 1; i <= 6; i++) {
-      if (idx + i < this.segments.length) {
-        this._fetchCloudAudio(this.segments[idx + i]).catch(() => {});
-      }
-    }
     try {
       const isCached = this._audioCache.has(this.segments[idx]);
       if (!isCached && this.onWaiting) this.onWaiting(true);
       const { data: b64, mimeType } = await this._fetchCloudAudio(this.segments[idx]);
       if (this.onWaiting) this.onWaiting(false);
       if (!this.isPlaying) return;
+      this._advancePrefetch(idx);
       // audio/pcm と audio/L16 の両方をPCMとして扱う
       const isPcm = mimeType && (mimeType.includes('pcm') || mimeType.toLowerCase().includes('l16'));
       const sampleRate = parseInt(mimeType?.match(/rate=(\d+)/)?.[1] || '24000');
@@ -955,18 +951,27 @@ class TTSEngine {
     this.stop();
     this._buildSegments(cleanText);
     this.currentIndex = 0;
+    this._fetchedUpTo = -1;
   }
 
-  prefetchFirst() { this._prefetchFrom(0); }
+  prefetchFirst() { this._initPrefetchAt(0); }
 
-  _prefetchFrom(base) {
+  _initPrefetchAt(idx) {
+    if (!this._cloudKey || !this.segments.length || idx >= this.segments.length) return;
+    this._fetchedUpTo = idx - 1;
+    this._fetchCloudAudio(this.segments[idx]).catch(() => {});
+    this._fetchedUpTo = idx;
+  }
+
+  _advancePrefetch(idx) {
     if (!this._cloudKey || !this.segments.length) return;
-    const seg = this.segments;
-    const f = i => { if (base + i < seg.length) this._fetchCloudAudio(seg[base + i]).catch(() => {}); };
-    f(0);
-    setTimeout(() => f(1), 200);
-    setTimeout(() => f(2), 500);
-    setTimeout(() => { f(3); f(4); f(5); }, 1000);
+    const target = Math.min(idx + 6, this.segments.length - 1);
+    const toFetch = Math.min(target - this._fetchedUpTo, 2);
+    for (let i = 1; i <= toFetch; i++) {
+      const si = this._fetchedUpTo + i;
+      if (si < this.segments.length) this._fetchCloudAudio(this.segments[si]).catch(() => {});
+    }
+    if (toFetch > 0) this._fetchedUpTo += toFetch;
   }
 
   play() {
@@ -1072,7 +1077,7 @@ class TTSEngine {
     this._abortAll();
     this.currentIndex = Math.max(0, Math.min(idx, this.segments.length - 1));
     if (this.onSegmentChange) this.onSegmentChange(this.currentIndex);
-    this._prefetchFrom(this.currentIndex);
+    this._initPrefetchAt(this.currentIndex);
     if (wasPlaying) { this.isPlaying = true; if (this._cloudKey) this._ensureAudioCtx(); this._speak(this.currentIndex); }
   }
 
