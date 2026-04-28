@@ -370,7 +370,7 @@
       width: 100%;
     }
     #cloud-api-key::placeholder { color: var(--muted); opacity: 0.6; }
-    #cloud-voice-select {
+    #cloud-voice-select, #openai-voice-select, #tts-provider-select {
       background: var(--elevated);
       color: var(--text);
       border: 1px solid rgba(124,58,237,0.35);
@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v19</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v20</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -481,14 +481,33 @@
 
   <div id="settings-panel">
     <div class="settings-group">
-      <div class="settings-label">Gemini APIキー（Google AI Studio）</div>
-      <input type="password" id="cloud-api-key" placeholder="AIzaSy... （未入力 = デバイス音声）" autocomplete="off">
-      <div class="settings-hint">Google AI Studio（ai.google.dev）で無料取得。Gemini 3.1 Flash TTS を使用。無料枠あり（レート制限内）。</div>
+      <div class="settings-label">TTSプロバイダー</div>
+      <select id="tts-provider-select">
+        <option value="openai">OpenAI TTS（自然・レート制限なし・推奨）</option>
+        <option value="gemini">Gemini TTS（Google・無料・10回/分制限）</option>
+      </select>
+      <div class="settings-hint" id="provider-hint-openai">platform.openai.com で取得。tts-1 モデル使用。1,000文字あたり約22円。リクエスト制限なし。</div>
+      <div class="settings-hint" id="provider-hint-gemini" style="display:none;">Google AI Studio（ai.google.dev）で無料取得。無料枠は10リクエスト/分。長文では制限に当たる場合あり。</div>
     </div>
     <div class="settings-group">
-      <div class="settings-label">音声の種類</div>
+      <div class="settings-label" id="api-key-label">OpenAI APIキー</div>
+      <input type="password" id="cloud-api-key" placeholder="sk-proj-...（未入力 = デバイス音声）" autocomplete="off">
+    </div>
+    <div class="settings-group" id="openai-voice-group">
+      <div class="settings-label">音声の種類（OpenAI）</div>
+      <select id="openai-voice-select">
+        <option value="nova">nova（女性・明るい・推奨）</option>
+        <option value="shimmer">shimmer（女性・やわらか）</option>
+        <option value="alloy">alloy（中性）</option>
+        <option value="echo">echo（男性）</option>
+        <option value="fable">fable（男性・温かみ）</option>
+        <option value="onyx">onyx（男性・低音）</option>
+      </select>
+    </div>
+    <div class="settings-group" id="gemini-voice-group" style="display:none;">
+      <div class="settings-label">音声の種類（Gemini）</div>
       <select id="cloud-voice-select">
-        <option value="Kore">Kore（女性・落ち着き・推奨）</option>
+        <option value="Kore">Kore（女性・落ち着き）</option>
         <option value="Aoede">Aoede（女性・明るい）</option>
         <option value="Leda">Leda（女性・やわらか）</option>
         <option value="Zephyr">Zephyr（中性・さわやか）</option>
@@ -658,6 +677,8 @@ class TTSEngine {
     this._voices = [];
     this._cloudKey = '';
     this._cloudVoice = 'Kore';
+    this._ttsProvider = 'openai';
+    this._openaiVoice = 'nova';
     this._audioCache = new Map();
     this._currentAudio = null;
     this._sharedAudioCtx = null;
@@ -674,14 +695,25 @@ class TTSEngine {
     }
   }
 
-  setCloudKey(key, voice) {
+  setCloudKey(key, voice, provider, openaiVoice) {
+    this._ttsProvider = provider || 'openai';
     this._cloudKey = key || '';
     if (voice) this._cloudVoice = voice;
+    if (openaiVoice) this._openaiVoice = openaiVoice;
     if (!key) this._audioCache.clear();
   }
 
   async _fetchCloudAudio(text) {
     if (this._audioCache.has(text)) return this._audioCache.get(text);
+    const result = this._ttsProvider === 'openai'
+      ? await this._fetchOpenAI(text)
+      : await this._fetchGemini(text);
+    this._audioCache.set(text, result);
+    addCloudChars(text.length);
+    return result;
+  }
+
+  async _fetchGemini(text) {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${this._cloudKey}`,
       {
@@ -704,10 +736,33 @@ class TTSEngine {
     if (data.error) throw new Error(data.error.message);
     const part = data.candidates?.[0]?.content?.parts?.[0];
     if (!part?.inlineData?.data) throw new Error('音声データが返ってきませんでした');
-    const result = { data: part.inlineData.data, mimeType: part.inlineData.mimeType || 'audio/pcm;rate=24000' };
-    this._audioCache.set(text, result);
-    addCloudChars(text.length);
-    return result;
+    return { data: part.inlineData.data, mimeType: part.inlineData.mimeType || 'audio/pcm;rate=24000' };
+  }
+
+  async _fetchOpenAI(text) {
+    const speed = Math.min(4.0, Math.max(0.25, this.rate));
+    const res = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this._cloudKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'tts-1',
+        input: text,
+        voice: this._openaiVoice || 'nova',
+        speed
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || `HTTP ${res.status}`);
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return { data: btoa(binary), mimeType: 'audio/mpeg' };
   }
 
   async _speakCloud(idx) {
@@ -769,10 +824,7 @@ class TTSEngine {
       this.isPlaying = false;
       if (this.onSegmentChange) this.onSegmentChange(-1);
       const msg = e.message || String(e);
-      const cached = this._audioCache.get(this.segments[idx]);
-      const mt = cached?.mimeType || '不明';
-      const ctxState = this._sharedAudioCtx?.state || 'なし';
-      alert('Cloud TTS エラー\n種別: ' + (e.name || '不明') + '\n内容: ' + msg + '\nmimeType: ' + mt + '\nAudioCtx: ' + ctxState);
+      showToast('⚠ TTS エラー: ' + msg.slice(0, 80), 5000);
     }
   }
 
@@ -1213,46 +1265,87 @@ function updateCharDisplay() {
 // ============================================================
 // CLOUD TTS SETTINGS
 // ============================================================
+function applyProviderUI(provider) {
+  const isOpenAI = provider === 'openai';
+  $('openai-voice-group').style.display = isOpenAI ? '' : 'none';
+  $('gemini-voice-group').style.display = isOpenAI ? 'none' : '';
+  $('provider-hint-openai').style.display = isOpenAI ? '' : 'none';
+  $('provider-hint-gemini').style.display = isOpenAI ? 'none' : '';
+  $('api-key-label').textContent = isOpenAI ? 'OpenAI APIキー' : 'Gemini APIキー';
+  $('cloud-api-key').placeholder = isOpenAI ? 'sk-proj-...（未入力 = デバイス音声）' : 'AIzaSy...（未入力 = デバイス音声）';
+}
+
+$('tts-provider-select').addEventListener('change', () => {
+  applyProviderUI($('tts-provider-select').value);
+});
+
 function loadCloudSettings() {
-  const key = localStorage.getItem('obs-tts-cloud-key') || '';
-  const voice = localStorage.getItem('obs-tts-cloud-voice') || 'Kore';
-  $('cloud-api-key').value = key;
-  $('cloud-voice-select').value = voice;
-  tts.setCloudKey(key, voice);
-  if (key) $('cloud-status').textContent = '☁ クラウド音声が有効です';
+  const provider = localStorage.getItem('obs-tts-provider') || 'openai';
+  const geminiKey = localStorage.getItem('obs-tts-cloud-key') || '';
+  const openaiKey = localStorage.getItem('obs-tts-openai-key') || '';
+  const geminiVoice = localStorage.getItem('obs-tts-cloud-voice') || 'Kore';
+  const openaiVoice = localStorage.getItem('obs-tts-openai-voice') || 'nova';
+  $('tts-provider-select').value = provider;
+  $('cloud-api-key').value = provider === 'openai' ? openaiKey : geminiKey;
+  $('cloud-voice-select').value = geminiVoice;
+  $('openai-voice-select').value = openaiVoice;
+  applyProviderUI(provider);
+  const activeKey = provider === 'openai' ? openaiKey : geminiKey;
+  tts.setCloudKey(activeKey, geminiVoice, provider, openaiVoice);
+  if (activeKey) $('cloud-status').textContent = '☁ クラウド音声が有効です';
 }
 
 $('btn-test-key').addEventListener('click', async () => {
   const key = $('cloud-api-key').value.trim();
   if (!key) { showToast('APIキーを入力してください'); return; }
-  const voice = $('cloud-voice-select').value;
+  const provider = $('tts-provider-select').value;
   const status = $('cloud-status');
   status.style.color = '';
   status.textContent = '🔄 テスト中...';
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${key}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: 'テスト' }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
-          }
-        }) }
-    );
-    const data = await res.json();
-    if (data.error) throw new Error(`${data.error.code}: ${data.error.message}`);
-    const part = data.candidates?.[0]?.content?.parts?.[0];
-    if (!part?.inlineData?.data) throw new Error('音声データが取得できませんでした');
-    const mimeType = part.inlineData.mimeType || 'audio/pcm;rate=24000';
-    const isPcm = mimeType.includes('pcm');
-    const sampleRate = parseInt(mimeType.match(/rate=(\d+)/)?.[1] || '24000');
-    const audioSrc = isPcm ? pcmToWav(part.inlineData.data, sampleRate) : `data:${mimeType};base64,${part.inlineData.data}`;
-    status.style.color = '#4ade80';
-    status.textContent = '✅ APIキー OK！Gemini TTS が使えます';
-    const audio = new Audio(audioSrc);
-    audio.play().catch(() => {});
+    if (provider === 'openai') {
+      const res = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'tts-1', input: 'テスト', voice: $('openai-voice-select').value })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `HTTP ${res.status}`);
+      }
+      const arrayBuffer = await res.arrayBuffer();
+      const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
+      const audioSrc = URL.createObjectURL(blob);
+      status.style.color = '#4ade80';
+      status.textContent = '✅ APIキー OK！OpenAI TTS が使えます';
+      const audio = new Audio(audioSrc);
+      audio.play().catch(() => {});
+    } else {
+      const voice = $('cloud-voice-select').value;
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${key}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: 'テスト' }] }],
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
+            }
+          }) }
+      );
+      const data = await res.json();
+      if (data.error) throw new Error(`${data.error.code}: ${data.error.message}`);
+      const part = data.candidates?.[0]?.content?.parts?.[0];
+      if (!part?.inlineData?.data) throw new Error('音声データが取得できませんでした');
+      const mimeType = part.inlineData.mimeType || 'audio/pcm;rate=24000';
+      const isPcm = mimeType.includes('pcm') || mimeType.toLowerCase().includes('l16');
+      const sampleRate = parseInt(mimeType.match(/rate=(\d+)/)?.[1] || '24000');
+      const audioSrc = isPcm ? pcmToWav(part.inlineData.data, sampleRate) : `data:${mimeType};base64,${part.inlineData.data}`;
+      status.style.color = '#4ade80';
+      status.textContent = '✅ APIキー OK！Gemini TTS が使えます';
+      const audio = new Audio(audioSrc);
+      audio.play().catch(() => {});
+    }
   } catch (e) {
     status.style.color = '#f87171';
     status.textContent = '❌ エラー: ' + (e.message || String(e));
@@ -1263,16 +1356,22 @@ $('btn-reload-app').addEventListener('click', () => location.reload());
 
 $('btn-save-settings').addEventListener('click', () => {
   const key = $('cloud-api-key').value.trim();
-  const voice = $('cloud-voice-select').value;
-  tts.setCloudKey(key, voice);
+  const provider = $('tts-provider-select').value;
+  const geminiVoice = $('cloud-voice-select').value;
+  const openaiVoice = $('openai-voice-select').value;
+  tts.setCloudKey(key, geminiVoice, provider, openaiVoice);
+  localStorage.setItem('obs-tts-provider', provider);
+  if (provider === 'openai') {
+    key ? localStorage.setItem('obs-tts-openai-key', key) : localStorage.removeItem('obs-tts-openai-key');
+    localStorage.setItem('obs-tts-openai-voice', openaiVoice);
+  } else {
+    key ? localStorage.setItem('obs-tts-cloud-key', key) : localStorage.removeItem('obs-tts-cloud-key');
+    localStorage.setItem('obs-tts-cloud-voice', geminiVoice);
+  }
   if (key) {
-    localStorage.setItem('obs-tts-cloud-key', key);
-    localStorage.setItem('obs-tts-cloud-voice', voice);
     $('cloud-status').textContent = '☁ クラウド音声が有効です';
     showToast('設定を保存しました ✓');
   } else {
-    localStorage.removeItem('obs-tts-cloud-key');
-    localStorage.removeItem('obs-tts-cloud-voice');
     $('cloud-status').textContent = '';
     showToast('APIキーを削除しました');
   }
