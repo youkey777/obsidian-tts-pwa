@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v20</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v21</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -483,17 +483,36 @@
     <div class="settings-group">
       <div class="settings-label">TTSプロバイダー</div>
       <select id="tts-provider-select">
-        <option value="openai">OpenAI TTS（自然・レート制限なし・推奨）</option>
+        <option value="voicevox">VOICEVOX（ずんだもん等・完全無料・推奨）</option>
+        <option value="openai">OpenAI TTS（自然・レート制限なし・有料）</option>
         <option value="gemini">Gemini TTS（Google・無料・10回/分制限）</option>
       </select>
-      <div class="settings-hint" id="provider-hint-openai">platform.openai.com で取得。tts-1 モデル使用。1,000文字あたり約22円。リクエスト制限なし。</div>
+      <div class="settings-hint" id="provider-hint-voicevox">su-shiki.com の無料VOICEVOXホスティングAPI。ずんだもん・四国めたん等のアニメ声が使えます。1日1000万ポイント（約1000文字×数百回分）無料。</div>
+      <div class="settings-hint" id="provider-hint-openai" style="display:none;">platform.openai.com で取得。tts-1 モデル使用。1,000文字あたり約22円。リクエスト制限なし。</div>
       <div class="settings-hint" id="provider-hint-gemini" style="display:none;">Google AI Studio（ai.google.dev）で無料取得。無料枠は10リクエスト/分。長文では制限に当たる場合あり。</div>
     </div>
     <div class="settings-group">
-      <div class="settings-label" id="api-key-label">OpenAI APIキー</div>
-      <input type="password" id="cloud-api-key" placeholder="sk-proj-...（未入力 = デバイス音声）" autocomplete="off">
+      <div class="settings-label" id="api-key-label">VOICEVOX APIキー（su-shiki）</div>
+      <input type="password" id="cloud-api-key" placeholder="S7d-...（未入力 = デバイス音声）" autocomplete="off">
     </div>
-    <div class="settings-group" id="openai-voice-group">
+    <div class="settings-group" id="voicevox-voice-group">
+      <div class="settings-label">キャラクター（VOICEVOX）</div>
+      <select id="voicevox-speaker-select">
+        <option value="3">ずんだもん（ノーマル）</option>
+        <option value="1">ずんだもん（あまあま）</option>
+        <option value="7">ずんだもん（ツンツン）</option>
+        <option value="5">ずんだもん（セクシー）</option>
+        <option value="2">四国めたん（ノーマル）</option>
+        <option value="0">四国めたん（あまあま）</option>
+        <option value="6">四国めたん（ツンツン）</option>
+        <option value="8">春日部つむぎ（ノーマル）</option>
+        <option value="10">雨晴はう（ノーマル）</option>
+        <option value="11">波音リツ（ノーマル）</option>
+        <option value="13">青山龍星（ノーマル）</option>
+        <option value="14">冥鳴ひまり（ノーマル）</option>
+      </select>
+    </div>
+    <div class="settings-group" id="openai-voice-group" style="display:none;">
       <div class="settings-label">音声の種類（OpenAI）</div>
       <select id="openai-voice-select">
         <option value="nova">nova（女性・明るい・推奨）</option>
@@ -677,8 +696,9 @@ class TTSEngine {
     this._voices = [];
     this._cloudKey = '';
     this._cloudVoice = 'Kore';
-    this._ttsProvider = 'openai';
+    this._ttsProvider = 'voicevox';
     this._openaiVoice = 'nova';
+    this._voicevoxSpeaker = '3';
     this._audioCache = new Map();
     this._currentAudio = null;
     this._sharedAudioCtx = null;
@@ -695,11 +715,12 @@ class TTSEngine {
     }
   }
 
-  setCloudKey(key, voice, provider, openaiVoice) {
-    this._ttsProvider = provider || 'openai';
+  setCloudKey(key, voice, provider, openaiVoice, voicevoxSpeaker) {
+    this._ttsProvider = provider || 'voicevox';
     this._cloudKey = key || '';
     if (voice) this._cloudVoice = voice;
     if (openaiVoice) this._openaiVoice = openaiVoice;
+    if (voicevoxSpeaker) this._voicevoxSpeaker = voicevoxSpeaker;
     if (!key) this._audioCache.clear();
   }
 
@@ -707,7 +728,9 @@ class TTSEngine {
     if (this._audioCache.has(text)) return this._audioCache.get(text);
     const result = this._ttsProvider === 'openai'
       ? await this._fetchOpenAI(text)
-      : await this._fetchGemini(text);
+      : this._ttsProvider === 'voicevox'
+        ? await this._fetchVoicevox(text)
+        : await this._fetchGemini(text);
     this._audioCache.set(text, result);
     addCloudChars(text.length);
     return result;
@@ -737,6 +760,24 @@ class TTSEngine {
     const part = data.candidates?.[0]?.content?.parts?.[0];
     if (!part?.inlineData?.data) throw new Error('音声データが返ってきませんでした');
     return { data: part.inlineData.data, mimeType: part.inlineData.mimeType || 'audio/pcm;rate=24000' };
+  }
+
+  async _fetchVoicevox(text) {
+    const params = new URLSearchParams({
+      text,
+      speaker: this._voicevoxSpeaker || '3',
+      key: this._cloudKey
+    });
+    const res = await fetch(`https://api.su-shiki.com/v2/voicevox/audio/?${params}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.errorMessage || `HTTP ${res.status}`);
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return { data: btoa(binary), mimeType: 'audio/wav' };
   }
 
   async _fetchOpenAI(text) {
@@ -1266,13 +1307,16 @@ function updateCharDisplay() {
 // CLOUD TTS SETTINGS
 // ============================================================
 function applyProviderUI(provider) {
-  const isOpenAI = provider === 'openai';
-  $('openai-voice-group').style.display = isOpenAI ? '' : 'none';
-  $('gemini-voice-group').style.display = isOpenAI ? 'none' : '';
-  $('provider-hint-openai').style.display = isOpenAI ? '' : 'none';
-  $('provider-hint-gemini').style.display = isOpenAI ? 'none' : '';
-  $('api-key-label').textContent = isOpenAI ? 'OpenAI APIキー' : 'Gemini APIキー';
-  $('cloud-api-key').placeholder = isOpenAI ? 'sk-proj-...（未入力 = デバイス音声）' : 'AIzaSy...（未入力 = デバイス音声）';
+  $('voicevox-voice-group').style.display = provider === 'voicevox' ? '' : 'none';
+  $('openai-voice-group').style.display = provider === 'openai' ? '' : 'none';
+  $('gemini-voice-group').style.display = provider === 'gemini' ? '' : 'none';
+  $('provider-hint-voicevox').style.display = provider === 'voicevox' ? '' : 'none';
+  $('provider-hint-openai').style.display = provider === 'openai' ? '' : 'none';
+  $('provider-hint-gemini').style.display = provider === 'gemini' ? '' : 'none';
+  const labels = { voicevox: 'VOICEVOX APIキー（su-shiki）', openai: 'OpenAI APIキー', gemini: 'Gemini APIキー' };
+  const placeholders = { voicevox: 'S7d-...（未入力 = デバイス音声）', openai: 'sk-proj-...（未入力 = デバイス音声）', gemini: 'AIzaSy...（未入力 = デバイス音声）' };
+  $('api-key-label').textContent = labels[provider] || 'APIキー';
+  $('cloud-api-key').placeholder = placeholders[provider] || '';
 }
 
 $('tts-provider-select').addEventListener('change', () => {
@@ -1280,18 +1324,22 @@ $('tts-provider-select').addEventListener('change', () => {
 });
 
 function loadCloudSettings() {
-  const provider = localStorage.getItem('obs-tts-provider') || 'openai';
+  const provider = localStorage.getItem('obs-tts-provider') || 'voicevox';
+  const voicevoxKey = localStorage.getItem('obs-tts-voicevox-key') || '';
   const geminiKey = localStorage.getItem('obs-tts-cloud-key') || '';
   const openaiKey = localStorage.getItem('obs-tts-openai-key') || '';
   const geminiVoice = localStorage.getItem('obs-tts-cloud-voice') || 'Kore';
   const openaiVoice = localStorage.getItem('obs-tts-openai-voice') || 'nova';
+  const voicevoxSpeaker = localStorage.getItem('obs-tts-voicevox-speaker') || '3';
   $('tts-provider-select').value = provider;
-  $('cloud-api-key').value = provider === 'openai' ? openaiKey : geminiKey;
+  const keyMap = { voicevox: voicevoxKey, openai: openaiKey, gemini: geminiKey };
+  $('cloud-api-key').value = keyMap[provider] || '';
   $('cloud-voice-select').value = geminiVoice;
   $('openai-voice-select').value = openaiVoice;
+  $('voicevox-speaker-select').value = voicevoxSpeaker;
   applyProviderUI(provider);
-  const activeKey = provider === 'openai' ? openaiKey : geminiKey;
-  tts.setCloudKey(activeKey, geminiVoice, provider, openaiVoice);
+  const activeKey = keyMap[provider] || '';
+  tts.setCloudKey(activeKey, geminiVoice, provider, openaiVoice, voicevoxSpeaker);
   if (activeKey) $('cloud-status').textContent = '☁ クラウド音声が有効です';
 }
 
@@ -1303,7 +1351,21 @@ $('btn-test-key').addEventListener('click', async () => {
   status.style.color = '';
   status.textContent = '🔄 テスト中...';
   try {
-    if (provider === 'openai') {
+    if (provider === 'voicevox') {
+      const speaker = $('voicevox-speaker-select').value;
+      const params = new URLSearchParams({ text: 'テスト', speaker, key });
+      const res = await fetch(`https://api.su-shiki.com/v2/voicevox/audio/?${params}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.errorMessage || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const audioSrc = URL.createObjectURL(blob);
+      status.style.color = '#4ade80';
+      status.textContent = '✅ APIキー OK！VOICEVOX が使えます';
+      const audio = new Audio(audioSrc);
+      audio.play().catch(() => {});
+    } else if (provider === 'openai') {
       const res = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
@@ -1359,9 +1421,13 @@ $('btn-save-settings').addEventListener('click', () => {
   const provider = $('tts-provider-select').value;
   const geminiVoice = $('cloud-voice-select').value;
   const openaiVoice = $('openai-voice-select').value;
-  tts.setCloudKey(key, geminiVoice, provider, openaiVoice);
+  const voicevoxSpeaker = $('voicevox-speaker-select').value;
+  tts.setCloudKey(key, geminiVoice, provider, openaiVoice, voicevoxSpeaker);
   localStorage.setItem('obs-tts-provider', provider);
-  if (provider === 'openai') {
+  if (provider === 'voicevox') {
+    key ? localStorage.setItem('obs-tts-voicevox-key', key) : localStorage.removeItem('obs-tts-voicevox-key');
+    localStorage.setItem('obs-tts-voicevox-speaker', voicevoxSpeaker);
+  } else if (provider === 'openai') {
     key ? localStorage.setItem('obs-tts-openai-key', key) : localStorage.removeItem('obs-tts-openai-key');
     localStorage.setItem('obs-tts-openai-voice', openaiVoice);
   } else {
