@@ -481,21 +481,21 @@
 
   <div id="settings-panel">
     <div class="settings-group">
-      <div class="settings-label">Google Cloud TTS APIキー</div>
+      <div class="settings-label">Gemini APIキー（Google AI Studio）</div>
       <input type="password" id="cloud-api-key" placeholder="AIzaSy... （未入力 = デバイス音声）" autocomplete="off">
-      <div class="settings-hint">設定すると Neural2 高品質日本語音声に切り替わります。月100万文字まで無料。</div>
+      <div class="settings-hint">Google AI Studio（ai.google.dev）で無料取得。Gemini 3.1 Flash TTS を使用。無料枠あり（レート制限内）。</div>
     </div>
     <div class="settings-group">
-      <div class="settings-label">クラウド音声の種類</div>
+      <div class="settings-label">音声の種類</div>
       <select id="cloud-voice-select">
-        <option value="ja-JP-Neural2-C">Neural2 男性C（推奨）</option>
-        <option value="ja-JP-Neural2-D">Neural2 男性D</option>
-        <option value="ja-JP-Neural2-C">Neural2 女性B</option>
-        <option value="ja-JP-Neural2-A">Neural2 女性A</option>
-        <option value="ja-JP-Wavenet-C">WaveNet 男性C</option>
-        <option value="ja-JP-Wavenet-D">WaveNet 男性D</option>
-        <option value="ja-JP-Wavenet-B">WaveNet 女性B</option>
-        <option value="ja-JP-Wavenet-A">WaveNet 女性A</option>
+        <option value="Kore">Kore（女性・落ち着き・推奨）</option>
+        <option value="Aoede">Aoede（女性・明るい）</option>
+        <option value="Leda">Leda（女性・やわらか）</option>
+        <option value="Zephyr">Zephyr（中性・さわやか）</option>
+        <option value="Puck">Puck（男性・活発）</option>
+        <option value="Charon">Charon（男性・深み）</option>
+        <option value="Fenrir">Fenrir（男性・力強い）</option>
+        <option value="Orus">Orus（男性・低音）</option>
       </select>
     </div>
     <button id="btn-save-settings">保存して適用</button>
@@ -611,9 +611,35 @@ function preprocessMarkdown(raw) {
   t = t.replace(/^[\-\*\+]\s+/gm, '');
   t = t.replace(/^\d+\.\s+/gm, '');
 
+  // 絵文字除去（読み上げ時に「はてなマーク」「ぺーぱーくりっぷ」等と読まれるのを防ぐ）
+  t = t.replace(/[\u{1F300}-\u{1FFFF}]/gu, '');  // 絵文字メインブロック
+  t = t.replace(/[\u{2600}-\u{27BF}]/gu, '');     // 記号・デコ系
+  t = t.replace(/\uFE0F/g, '');                    // variation selector-16
+  t = t.replace(/\u200D/g, '');                    // zero-width joiner
+  t = t.replace(/[\u{1F000}-\u{1F0FF}]/gu, '');   // 麻雀・トランプ牌
+
   // 余白整理
   t = t.replace(/\n{3,}/g, '\n\n');
   return t.trim();
+}
+
+// ============================================================
+// PCM → WAV 変換
+// ============================================================
+function pcmToWav(b64, sampleRate = 24000) {
+  const pcm = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const numCh = 1, bps = 16;
+  const buf = new ArrayBuffer(44 + pcm.length);
+  const v = new DataView(buf);
+  const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length, true);
+  w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, numCh, true);
+  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * numCh * bps / 8, true);
+  v.setUint16(32, numCh * bps / 8, true); v.setUint16(34, bps, true);
+  w(36, 'data'); v.setUint32(40, pcm.length, true);
+  new Uint8Array(buf, 44).set(pcm);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
 
 // ============================================================
@@ -631,7 +657,7 @@ class TTSEngine {
     this.onEnd = null;
     this._voices = [];
     this._cloudKey = '';
-    this._cloudVoice = 'ja-JP-Neural2-C';
+    this._cloudVoice = 'Kore';
     this._audioCache = new Map();
     this._currentAudio = null;
     this._initVoices();
@@ -646,22 +672,31 @@ class TTSEngine {
   async _fetchCloudAudio(text) {
     if (this._audioCache.has(text)) return this._audioCache.get(text);
     const res = await fetch(
-      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${this._cloudKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${this._cloudKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: { text },
-          voice: { languageCode: 'ja-JP', name: this._cloudVoice },
-          audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0 }
+          contents: [{ parts: [{ text }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: this._cloudVoice }
+              }
+            }
+          }
         })
       }
     );
     const data = await res.json();
     if (data.error) throw new Error(data.error.message);
-    this._audioCache.set(text, data.audioContent);
+    const part = data.candidates?.[0]?.content?.parts?.[0];
+    if (!part?.inlineData?.data) throw new Error('音声データが返ってきませんでした');
+    const result = { data: part.inlineData.data, mimeType: part.inlineData.mimeType || 'audio/pcm;rate=24000' };
+    this._audioCache.set(text, result);
     addCloudChars(text.length);
-    return data.audioContent;
+    return result;
   }
 
   async _speakCloud(idx) {
@@ -678,13 +713,16 @@ class TTSEngine {
       this._fetchCloudAudio(this.segments[idx + 1]).catch(() => {});
     }
     try {
-      const b64 = await this._fetchCloudAudio(this.segments[idx]);
-      if (!this.isPlaying) return;
-      this._currentAudio = new Audio(`data:audio/mp3;base64,${b64}`);
+      const { data: b64, mimeType } = await this._fetchCloudAudio(this.segments[idx]);
+      const isPcm = mimeType && mimeType.includes('pcm');
+      const sampleRate = parseInt(mimeType?.match(/rate=(\d+)/)?.[1] || '24000');
+      const audioSrc = isPcm ? pcmToWav(b64, sampleRate) : `data:${mimeType};base64,${b64}`;
+      if (!this.isPlaying) { if (isPcm) URL.revokeObjectURL(audioSrc); return; }
+      this._currentAudio = new Audio(audioSrc);
       this._currentAudio.playbackRate = this.rate;
       await new Promise((resolve, reject) => {
-        this._currentAudio.onended = resolve;
-        this._currentAudio.onerror = reject;
+        this._currentAudio.onended = () => { if (isPcm) URL.revokeObjectURL(audioSrc); resolve(); };
+        this._currentAudio.onerror = () => { if (isPcm) URL.revokeObjectURL(audioSrc); reject(new Error('再生エラー')); };
         this._currentAudio.play().catch(reject);
       });
       if (this.isPlaying) this._speakCloud(idx + 1);
@@ -1120,7 +1158,7 @@ function updateCharDisplay() {
 // ============================================================
 function loadCloudSettings() {
   const key = localStorage.getItem('obs-tts-cloud-key') || '';
-  const voice = localStorage.getItem('obs-tts-cloud-voice') || 'ja-JP-Neural2-C';
+  const voice = localStorage.getItem('obs-tts-cloud-voice') || 'Kore';
   $('cloud-api-key').value = key;
   $('cloud-voice-select').value = voice;
   tts.setCloudKey(key, voice);
@@ -1136,19 +1174,27 @@ $('btn-test-key').addEventListener('click', async () => {
   status.textContent = '🔄 テスト中...';
   try {
     const res = await fetch(
-      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${key}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${key}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: { text: 'テスト' },
-          voice: { languageCode: 'ja-JP', name: voice },
-          audioConfig: { audioEncoding: 'MP3' }
+          contents: [{ parts: [{ text: 'テスト' }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
+          }
         }) }
     );
     const data = await res.json();
     if (data.error) throw new Error(`${data.error.code}: ${data.error.message}`);
+    const part = data.candidates?.[0]?.content?.parts?.[0];
+    if (!part?.inlineData?.data) throw new Error('音声データが取得できませんでした');
+    const mimeType = part.inlineData.mimeType || 'audio/pcm;rate=24000';
+    const isPcm = mimeType.includes('pcm');
+    const sampleRate = parseInt(mimeType.match(/rate=(\d+)/)?.[1] || '24000');
+    const audioSrc = isPcm ? pcmToWav(part.inlineData.data, sampleRate) : `data:${mimeType};base64,${part.inlineData.data}`;
     status.style.color = '#4ade80';
-    status.textContent = '✅ APIキー OK！Cloud TTS が使えます';
-    const audio = new Audio(`data:audio/mp3;base64,${data.audioContent}`);
+    status.textContent = '✅ APIキー OK！Gemini TTS が使えます';
+    const audio = new Audio(audioSrc);
     audio.play().catch(() => {});
   } catch (e) {
     status.style.color = '#f87171';
