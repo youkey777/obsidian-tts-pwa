@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v28</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v29</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -926,25 +926,44 @@ class TTSEngine {
   }
 
   _buildSegments(text) {
-    this.segments = [];
-    this.segmentTypes = [];
+    const rawSegs = [];
+    const rawTypes = [];
     for (const para of text.split(/\n{2,}/)) {
       const p = para.trim();
       if (!p) continue;
       const isHeading = p.charCodeAt(0) === 0x02;
       const clean = isHeading ? p.slice(1) : p;
       if (clean.length <= 250) {
-        this.segments.push(clean);
-        this.segmentTypes.push(isHeading ? 'heading' : 'normal');
+        rawSegs.push(clean);
+        rawTypes.push(isHeading ? 'heading' : 'normal');
       } else {
         for (const s of clean.split(/(?<=[。！？])\s*/)) {
           if (s.trim()) {
-            this.segments.push(s.trim());
-            this.segmentTypes.push('normal');
+            rawSegs.push(s.trim());
+            rawTypes.push('normal');
           }
         }
       }
     }
+    // 100文字未満の短いセグメントを結合して最低100文字を保証
+    this.segments = [];
+    this.segmentTypes = [];
+    let acc = '';
+    for (let i = 0; i < rawSegs.length; i++) {
+      if (rawTypes[i] === 'heading') {
+        if (acc) { this.segments.push(acc); this.segmentTypes.push('normal'); acc = ''; }
+        this.segments.push(rawSegs[i]);
+        this.segmentTypes.push('heading');
+      } else {
+        acc = acc ? acc + rawSegs[i] : rawSegs[i];
+        if (acc.length >= 100) {
+          this.segments.push(acc);
+          this.segmentTypes.push('normal');
+          acc = '';
+        }
+      }
+    }
+    if (acc) { this.segments.push(acc); this.segmentTypes.push('normal'); }
   }
 
   load(cleanText) {
