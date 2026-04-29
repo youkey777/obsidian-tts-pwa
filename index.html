@@ -463,7 +463,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v37</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v38</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -883,6 +883,12 @@ class TTSEngine {
   }
 
   async _fetchGoogleTTS(text, signal) {
+    const jst = new Date(Date.now() + 9 * 3600000);
+    const month = jst.toISOString().slice(0, 7);
+    const gtStored = JSON.parse(localStorage.getItem('obs-tts-google-tts-char-usage') || '{}');
+    if ((gtStored[month] || 0) >= 1000000) {
+      throw new Error('Google TTSの今月の無料枠（100万文字）を超過しました');
+    }
     const res = await fetch(
       `https://texttospeech.googleapis.com/v1/text:synthesize?key=${this._googleTTSKey}`,
       {
