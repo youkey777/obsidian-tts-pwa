@@ -463,7 +463,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v38</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v39</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -479,7 +479,7 @@
       <span class="fallback-icon">⚠️</span>
       <div class="fallback-body">
         <strong>VOICEVOXは本日の上限に達しました</strong>
-        <span>Google Cloud TTS（Neural2）で代替読み上げ中です。毎朝9時にVOICEVOXへ自動復帰します。</span><br>
+        <span>Google Cloud TTS（Neural2）で代替読み上げ中です。2時間ごとにVOICEVOXへの復帰を試みます。</span><br>
         <small id="voicevox-fallback-date"></small>
       </div>
     </div>
@@ -749,12 +749,13 @@ class TTSEngine {
     this._googleTTSKey = '';
     this._googleTTSVoice = 'ja-JP-Neural2-B';
     this._voicevoxDailyFailed = false;
-    this._voicevoxFailedDate = null;
+    this._voicevoxFailedAt = 0;
     this._googleTTSSwitchNotified = false;
-    const _vvFailedDate = localStorage.getItem('obs-tts-voicevox-failed-date');
-    if (_vvFailedDate) {
+    localStorage.removeItem('obs-tts-voicevox-failed-date'); // v39移行: 旧日付ベースキーを削除
+    const _vvFailedAt = parseInt(localStorage.getItem('obs-tts-voicevox-failed-at') || '0');
+    if (_vvFailedAt) {
       this._voicevoxDailyFailed = true;
-      this._voicevoxFailedDate = _vvFailedDate;
+      this._voicevoxFailedAt = _vvFailedAt;
     }
     this._initVoices();
   }
@@ -857,29 +858,24 @@ class TTSEngine {
     return { data: btoa(binary), mimeType: 'audio/wav' };
   }
 
-  _getJSTDateHour() {
-    const jst = new Date(Date.now() + 9 * 3600000);
-    return { date: jst.toISOString().slice(0, 10), hour: jst.getUTCHours() };
-  }
-
   _isVoicevoxAvailable() {
     if (!this._voicevoxDailyFailed) return true;
-    const { date, hour } = this._getJSTDateHour();
-    if (date > this._voicevoxFailedDate && hour >= 9) {
+    const RETRY_INTERVAL = 2 * 3600 * 1000; // 2時間クールダウン
+    if (Date.now() - this._voicevoxFailedAt > RETRY_INTERVAL) {
       this._voicevoxDailyFailed = false;
-      this._voicevoxFailedDate = null;
+      this._voicevoxFailedAt = 0;
       this._googleTTSSwitchNotified = false;
-      localStorage.removeItem('obs-tts-voicevox-failed-date');
+      localStorage.removeItem('obs-tts-voicevox-failed-at');
       return true;
     }
     return false;
   }
 
   _markVoicevoxDailyFailed() {
-    const { date } = this._getJSTDateHour();
+    const now = Date.now();
     this._voicevoxDailyFailed = true;
-    this._voicevoxFailedDate = date;
-    localStorage.setItem('obs-tts-voicevox-failed-date', date);
+    this._voicevoxFailedAt = now;
+    localStorage.setItem('obs-tts-voicevox-failed-at', String(now));
   }
 
   async _fetchGoogleTTS(text, signal) {
@@ -909,9 +905,12 @@ class TTSEngine {
   }
 
   async _fetchVoicevoxWithFallback(text, signal) {
+    const wasFailed = this._voicevoxDailyFailed;
     if (this._isVoicevoxAvailable()) {
       try {
-        return await this._fetchVoicevox(text, signal);
+        const result = await this._fetchVoicevox(text, signal);
+        if (wasFailed) updateFallbackBanner(); // 復帰成功時にバナーを消す
+        return result;
       } catch (e) {
         if (e.message === 'notEnoughPoints' && this._googleTTSKey) {
           this._markVoicevoxDailyFailed();
@@ -1301,10 +1300,15 @@ function showToast(msg, ms = 2200) {
 function updateFallbackBanner() {
   const banner = $('voicevox-fallback-banner');
   if (!banner) return;
-  const active = tts._ttsProvider === 'voicevox' && !tts._isVoicevoxAvailable();
+  const active = tts._ttsProvider === 'voicevox' && tts._voicevoxDailyFailed;
   banner.classList.toggle('show', active);
-  if (active && tts._voicevoxFailedDate) {
-    $('voicevox-fallback-date').textContent = `上限到達日: ${tts._voicevoxFailedDate}（翌9時以降に自動復帰）`;
+  if (active && tts._voicevoxFailedAt) {
+    const elapsed = Math.floor((Date.now() - tts._voicevoxFailedAt) / 60000);
+    const remaining = Math.max(0, 120 - elapsed);
+    const failedTime = new Date(tts._voicevoxFailedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+    $('voicevox-fallback-date').textContent = remaining > 0
+      ? `${failedTime}に上限到達 / あと約${remaining}分で復帰を試みます`
+      : `${failedTime}に上限到達 / 次の再生時に復帰を試みます`;
   }
 }
 
