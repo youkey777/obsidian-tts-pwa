@@ -445,7 +445,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v33</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v34</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -510,6 +510,19 @@
         <option value="11">波音リツ（ノーマル）</option>
         <option value="13">青山龍星（ノーマル）</option>
         <option value="14">冥鳴ひまり（ノーマル）</option>
+      </select>
+    </div>
+    <div class="settings-group" id="google-fallback-group" style="display:none;">
+      <div class="settings-label">フォールバック: Google Cloud TTS Neural2 APIキー</div>
+      <input type="password" id="google-tts-key" placeholder="AIzaSy...（未設定時はフォールバックなし）" autocomplete="off"
+        style="background:var(--elevated); color:var(--text); border:1px solid rgba(124,58,237,0.35); border-radius:8px; padding:10px 12px; font-size:13px; font-family:monospace; width:100%;">
+      <div class="settings-hint">VOICEVOXの1日ポイント上限（毎朝9時リセット）に達したとき自動で切り替えます。Google Cloud TTS Neural2。無料400万文字/月。翌朝9時以降は再びVOICEVOXを優先します。</div>
+      <div class="settings-label" style="margin-top:8px;">Neural2 音声</div>
+      <select id="google-tts-voice-select"
+        style="background:var(--elevated); color:var(--text); border:1px solid rgba(124,58,237,0.35); border-radius:8px; padding:8px 10px; font-size:13px; width:100%;">
+        <option value="ja-JP-Neural2-B">ja-JP-Neural2-B（女性・推奨）</option>
+        <option value="ja-JP-Neural2-C">ja-JP-Neural2-C（男性）</option>
+        <option value="ja-JP-Neural2-D">ja-JP-Neural2-D（男性・低音）</option>
       </select>
     </div>
     <div class="settings-group" id="openai-voice-group" style="display:none;">
@@ -707,6 +720,16 @@ class TTSEngine {
     this._fetchedUpTo = -1;
     this._currentAudio = null;
     this._sharedAudioCtx = null;
+    this._googleTTSKey = '';
+    this._googleTTSVoice = 'ja-JP-Neural2-B';
+    this._voicevoxDailyFailed = false;
+    this._voicevoxFailedDate = null;
+    this._googleTTSSwitchNotified = false;
+    const _vvFailedDate = localStorage.getItem('obs-tts-voicevox-failed-date');
+    if (_vvFailedDate) {
+      this._voicevoxDailyFailed = true;
+      this._voicevoxFailedDate = _vvFailedDate;
+    }
     this._initVoices();
   }
 
@@ -720,12 +743,14 @@ class TTSEngine {
     }
   }
 
-  setCloudKey(key, voice, provider, openaiVoice, voicevoxSpeaker) {
+  setCloudKey(key, voice, provider, openaiVoice, voicevoxSpeaker, googleTTSKey, googleTTSVoice) {
     this._ttsProvider = provider || 'voicevox';
     this._cloudKey = key || '';
     if (voice) this._cloudVoice = voice;
     if (openaiVoice) this._openaiVoice = openaiVoice;
     if (voicevoxSpeaker) this._voicevoxSpeaker = voicevoxSpeaker;
+    if (googleTTSKey !== undefined) this._googleTTSKey = googleTTSKey || '';
+    if (googleTTSVoice) this._googleTTSVoice = googleTTSVoice;
     if (!key) { this._audioCache.clear(); this._inFlight.clear(); this._fetchedUpTo = -1; }
   }
 
@@ -745,7 +770,7 @@ class TTSEngine {
         const result = this._ttsProvider === 'openai'
           ? await this._fetchOpenAI(text, controller.signal)
           : this._ttsProvider === 'voicevox'
-            ? await this._fetchVoicevox(text, controller.signal)
+            ? await this._fetchVoicevoxWithFallback(text, controller.signal)
             : await this._fetchGemini(text, controller.signal);
         this._audioCache.set(text, result);
         addCloudChars(text.length);
@@ -802,6 +827,71 @@ class TTSEngine {
     let binary = '';
     for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
     return { data: btoa(binary), mimeType: 'audio/wav' };
+  }
+
+  _getJSTDateHour() {
+    const jst = new Date(Date.now() + 9 * 3600000);
+    return { date: jst.toISOString().slice(0, 10), hour: jst.getUTCHours() };
+  }
+
+  _isVoicevoxAvailable() {
+    if (!this._voicevoxDailyFailed) return true;
+    const { date, hour } = this._getJSTDateHour();
+    if (date > this._voicevoxFailedDate && hour >= 9) {
+      this._voicevoxDailyFailed = false;
+      this._voicevoxFailedDate = null;
+      this._googleTTSSwitchNotified = false;
+      localStorage.removeItem('obs-tts-voicevox-failed-date');
+      return true;
+    }
+    return false;
+  }
+
+  _markVoicevoxDailyFailed() {
+    const { date } = this._getJSTDateHour();
+    this._voicevoxDailyFailed = true;
+    this._voicevoxFailedDate = date;
+    localStorage.setItem('obs-tts-voicevox-failed-date', date);
+  }
+
+  async _fetchGoogleTTS(text, signal) {
+    const res = await fetch(
+      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${this._googleTTSKey}`,
+      {
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: { text },
+          voice: { languageCode: 'ja-JP', name: this._googleTTSVoice },
+          audioConfig: { audioEncoding: 'MP3' }
+        })
+      }
+    );
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    if (!data.audioContent) throw new Error('音声データが返ってきませんでした');
+    return { data: data.audioContent, mimeType: 'audio/mpeg' };
+  }
+
+  async _fetchVoicevoxWithFallback(text, signal) {
+    if (this._isVoicevoxAvailable()) {
+      try {
+        return await this._fetchVoicevox(text, signal);
+      } catch (e) {
+        if (e.message === 'notEnoughPoints' && this._googleTTSKey) {
+          this._markVoicevoxDailyFailed();
+          if (!this._googleTTSSwitchNotified) {
+            this._googleTTSSwitchNotified = true;
+            showToast('⚠ VOICEVOXの今日の上限に達しました。Google TTS に切り替えます', 5000);
+          }
+          return await this._fetchGoogleTTS(text, signal);
+        }
+        throw e;
+      }
+    }
+    if (!this._googleTTSKey) throw new Error('VOICEVOXの上限中・フォールバックキー未設定');
+    return await this._fetchGoogleTTS(text, signal);
   }
 
   async _fetchOpenAI(text, signal) {
@@ -1369,6 +1459,7 @@ function updateCharDisplay() {
 // ============================================================
 function applyProviderUI(provider) {
   $('voicevox-voice-group').style.display = provider === 'voicevox' ? '' : 'none';
+  $('google-fallback-group').style.display = provider === 'voicevox' ? '' : 'none';
   $('openai-voice-group').style.display = provider === 'openai' ? '' : 'none';
   $('gemini-voice-group').style.display = provider === 'gemini' ? '' : 'none';
   $('provider-hint-voicevox').style.display = provider === 'voicevox' ? '' : 'none';
@@ -1392,15 +1483,19 @@ function loadCloudSettings() {
   const geminiVoice = localStorage.getItem('obs-tts-cloud-voice') || 'Kore';
   const openaiVoice = localStorage.getItem('obs-tts-openai-voice') || 'nova';
   const voicevoxSpeaker = localStorage.getItem('obs-tts-voicevox-speaker') || '3';
+  const googleTTSKey = localStorage.getItem('obs-tts-google-tts-key') || '';
+  const googleTTSVoice = localStorage.getItem('obs-tts-google-tts-voice') || 'ja-JP-Neural2-B';
   $('tts-provider-select').value = provider;
   const keyMap = { voicevox: voicevoxKey, openai: openaiKey, gemini: geminiKey };
   $('cloud-api-key').value = keyMap[provider] || '';
   $('cloud-voice-select').value = geminiVoice;
   $('openai-voice-select').value = openaiVoice;
   $('voicevox-speaker-select').value = voicevoxSpeaker;
+  $('google-tts-key').value = googleTTSKey;
+  $('google-tts-voice-select').value = googleTTSVoice;
   applyProviderUI(provider);
   const activeKey = keyMap[provider] || '';
-  tts.setCloudKey(activeKey, geminiVoice, provider, openaiVoice, voicevoxSpeaker);
+  tts.setCloudKey(activeKey, geminiVoice, provider, openaiVoice, voicevoxSpeaker, googleTTSKey, googleTTSVoice);
   if (activeKey) $('cloud-status').textContent = '☁ クラウド音声が有効です';
 }
 
@@ -1483,11 +1578,15 @@ $('btn-save-settings').addEventListener('click', () => {
   const geminiVoice = $('cloud-voice-select').value;
   const openaiVoice = $('openai-voice-select').value;
   const voicevoxSpeaker = $('voicevox-speaker-select').value;
-  tts.setCloudKey(key, geminiVoice, provider, openaiVoice, voicevoxSpeaker);
+  const googleTTSKey = $('google-tts-key').value.trim();
+  const googleTTSVoice = $('google-tts-voice-select').value;
+  tts.setCloudKey(key, geminiVoice, provider, openaiVoice, voicevoxSpeaker, googleTTSKey, googleTTSVoice);
   localStorage.setItem('obs-tts-provider', provider);
   if (provider === 'voicevox') {
     key ? localStorage.setItem('obs-tts-voicevox-key', key) : localStorage.removeItem('obs-tts-voicevox-key');
     localStorage.setItem('obs-tts-voicevox-speaker', voicevoxSpeaker);
+    googleTTSKey ? localStorage.setItem('obs-tts-google-tts-key', googleTTSKey) : localStorage.removeItem('obs-tts-google-tts-key');
+    localStorage.setItem('obs-tts-google-tts-voice', googleTTSVoice);
   } else if (provider === 'openai') {
     key ? localStorage.setItem('obs-tts-openai-key', key) : localStorage.removeItem('obs-tts-openai-key');
     localStorage.setItem('obs-tts-openai-voice', openaiVoice);
