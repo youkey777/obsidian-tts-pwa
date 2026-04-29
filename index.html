@@ -463,7 +463,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v35</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v36</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -799,7 +799,9 @@ class TTSEngine {
             ? await this._fetchVoicevoxWithFallback(text, controller.signal)
             : await this._fetchGemini(text, controller.signal);
         this._audioCache.set(text, result);
-        addCloudChars(text.length);
+        const actualProvider = (this._ttsProvider === 'voicevox' && this._voicevoxDailyFailed)
+          ? 'google-tts' : this._ttsProvider;
+        addCloudChars(text.length, actualProvider);
         return result;
       } finally {
         this._inFlight.delete(text);
@@ -1465,30 +1467,66 @@ document.querySelectorAll('.tab').forEach(tab =>
 // CLOUD TTS 文字数カウンター
 // ============================================================
 function getMonthKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const jst = new Date(Date.now() + 9 * 3600000);
+  return jst.toISOString().slice(0, 7);
 }
 
-function addCloudChars(n) {
-  const key = getMonthKey();
-  const stored = JSON.parse(localStorage.getItem('obs-tts-char-usage') || '{}');
-  stored[key] = (stored[key] || 0) + n;
-  localStorage.setItem('obs-tts-char-usage', JSON.stringify(stored));
+function getTodayKeyJST() {
+  const jst = new Date(Date.now() + 9 * 3600000);
+  return jst.toISOString().slice(0, 10);
+}
+
+function addCloudChars(n, provider) {
+  if (provider === 'voicevox') {
+    const today = getTodayKeyJST();
+    const stored = JSON.parse(localStorage.getItem('obs-tts-voicevox-char-today') || '{}');
+    stored[today] = (stored[today] || 0) + n;
+    localStorage.setItem('obs-tts-voicevox-char-today', JSON.stringify(stored));
+  } else if (provider === 'google-tts') {
+    const month = getMonthKey();
+    const stored = JSON.parse(localStorage.getItem('obs-tts-google-tts-char-usage') || '{}');
+    stored[month] = (stored[month] || 0) + n;
+    localStorage.setItem('obs-tts-google-tts-char-usage', JSON.stringify(stored));
+  }
   updateCharDisplay();
 }
 
 function updateCharDisplay() {
   const el = $('char-usage-display');
   if (!el) return;
-  const key = getMonthKey();
-  const stored = JSON.parse(localStorage.getItem('obs-tts-char-usage') || '{}');
-  const used = stored[key] || 0;
-  const limit = 1000000;
-  const pct = (used / limit * 100).toFixed(1);
-  const bar = '█'.repeat(Math.round(used / limit * 20)).padEnd(20, '░');
-  el.innerHTML = `<div style="margin-bottom:4px;">今月の使用文字数（${key}）</div>
-<div style="font-family:monospace; color:#7c3aed;">${bar}</div>
-<div style="margin-top:4px; color:${used > 800000 ? '#f87171' : '#e2e8f0'};">${used.toLocaleString()} / 1,000,000 文字（${pct}%）</div>`;
+
+  const today = getTodayKeyJST();
+  const month = getMonthKey();
+
+  // VOICEVOX: 今日の文字数
+  const vvStored = JSON.parse(localStorage.getItem('obs-tts-voicevox-char-today') || '{}');
+  const vvToday = vvStored[today] || 0;
+  const vvLimit = 77000;
+  const vvPct = Math.min(vvToday / vvLimit * 100, 100).toFixed(1);
+  const vvBar = '█'.repeat(Math.round(Math.min(vvToday / vvLimit, 1) * 20)).padEnd(20, '░');
+  const vvColor = vvToday >= vvLimit ? '#f87171' : vvToday > vvLimit * 0.8 ? '#fbbf24' : '#e2e8f0';
+
+  // Google TTS: 今月の文字数
+  const gtStored = JSON.parse(localStorage.getItem('obs-tts-google-tts-char-usage') || '{}');
+  const gtMonth = gtStored[month] || 0;
+  const gtLimit = 4000000;
+  const gtPct = Math.min(gtMonth / gtLimit * 100, 100).toFixed(1);
+  const gtBar = '█'.repeat(Math.round(Math.min(gtMonth / gtLimit, 1) * 20)).padEnd(20, '░');
+  const gtColor = gtMonth >= gtLimit ? '#f87171' : gtMonth > gtLimit * 0.8 ? '#fbbf24' : '#e2e8f0';
+
+  el.innerHTML = `
+<div style="margin-bottom:10px;">
+  <div style="font-size:12px; color:#94a3b8; margin-bottom:4px;">🎤 VOICEVOX 今日の使用文字数（${today}）</div>
+  <div style="font-family:monospace; color:#7c3aed; font-size:12px;">${vvBar}</div>
+  <div style="margin-top:3px; font-size:12px; color:${vvColor};">${vvToday.toLocaleString()} / 約77,000 文字（${vvPct}%）</div>
+  <div style="font-size:11px; color:#64748b; margin-top:2px;">毎朝9時（JST）にリセット</div>
+</div>
+<div>
+  <div style="font-size:12px; color:#94a3b8; margin-bottom:4px;">☁ Google TTS 今月の使用文字数（${month}）</div>
+  <div style="font-family:monospace; color:#0ea5e9; font-size:12px;">${gtBar}</div>
+  <div style="margin-top:3px; font-size:12px; color:${gtColor};">${gtMonth.toLocaleString()} / 4,000,000 文字（${gtPct}%）</div>
+  <div style="font-size:11px; color:#64748b; margin-top:2px;">無料枠400万文字/月</div>
+</div>`;
 }
 
 // ============================================================
