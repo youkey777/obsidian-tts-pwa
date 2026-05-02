@@ -463,7 +463,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v39</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v41</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -635,6 +635,17 @@ function preprocessMarkdown(raw) {
   // YAMLフロントマター
   t = t.replace(/^---[\s\S]*?---\s*\n/, '');
 
+  // Obsidianモバイルコピー: プロパティブロック（平文形式）を除去
+  // jp-politics-365等で "Day N:" より前にプロパティが含まれる場合
+  {
+    const m = t.match(/(?:^|\n)(Day\s+\d+\s*[:：])/);
+    if (m && m.index > 50) {
+      const before = t.slice(0, m.index);
+      const propHits = (before.match(/\b(?:day|phase|week|tags|title|date_generated)\b/gi) || []).length;
+      if (propHits >= 3) t = t.slice(m.index).replace(/^\n+/, '');
+    }
+  }
+
   // HTMLブロック（<details> quiz等）
   t = t.replace(/<details[\s\S]*?<\/details>/gi, '');
   t = t.replace(/<!--[\s\S]*?-->/g, '');
@@ -685,9 +696,14 @@ function preprocessMarkdown(raw) {
   // 区切り線
   t = t.replace(/^[-*_]{3,}\s*$/gm, '');
 
-  // リスト記号除去（テキストは残す）
-  t = t.replace(/^[\-\*\+]\s+/gm, '');
-  t = t.replace(/^\d+\.\s+/gm, '');
+  // リスト記号を改行に置換（段落分離を保証：スマホで箇条書きが繋がるのを防ぐ）
+  t = t.replace(/^[・•]\s*/gm, '\n');
+  t = t.replace(/^[\-\*\+]\s+/gm, '\n');
+  t = t.replace(/^\d+\.\s+/gm, '\n');
+
+  // ふりがな（括弧内ひらがなのみ）を除去：「国会（こっかい）」→「国会」
+  // ※ 「（追い出すこと）」「（Citizens' Assembly）」等の説明文は残す
+  t = t.replace(/（[ぁ-んー・]{2,}）/g, '');
 
   // 絵文字除去（読み上げ時に「はてなマーク」「ぺーぱーくりっぷ」等と読まれるのを防ぐ）
   t = t.replace(/[\u{1F300}-\u{1FFFF}]/gu, '');  // 絵文字メインブロック
@@ -1007,7 +1023,11 @@ class TTSEngine {
           this._currentAudio.play().catch(reject);
         });
       }
-      if (this.isPlaying) this._speakCloud(idx + 1);
+      if (this.isPlaying) {
+        // セグメント間に150msのポーズを挿入（息継ぎなし問題を解消）
+        const pause = this.segmentTypes[idx] === 'heading' ? 300 : 150;
+        setTimeout(() => this._speakCloud(idx + 1), pause);
+      }
     } catch (e) {
       if (this.onWaiting) this.onWaiting(false);
       if (e.name === 'AbortError') return;
@@ -1052,7 +1072,8 @@ class TTSEngine {
   _buildSegments(text) {
     const rawSegs = [];
     const rawTypes = [];
-    for (const para of text.split(/\n{2,}/)) {
+    // \n+ で分割（単一改行でも分割: スマホの箇条書きが\nのみで区切られる場合に対応）
+    for (const para of text.split(/\n+/)) {
       const p = para.trim();
       if (!p) continue;
       const isHeading = p.charCodeAt(0) === 0x02;
@@ -1061,7 +1082,8 @@ class TTSEngine {
         rawSegs.push(clean);
         rawTypes.push('heading');
       } else {
-        for (const s of clean.split(/(?<=[。！？、])\s*/)) {
+        // 「、」では分割せず「。！？」のみで文単位に分割（息継ぎなし問題を解消）
+        for (const s of clean.split(/(?<=[。！？])\s*/)) {
           if (s.trim()) {
             rawSegs.push(s.trim());
             rawTypes.push('normal');
@@ -1069,7 +1091,8 @@ class TTSEngine {
         }
       }
     }
-    // 50文字未満の短いセグメントを結合して最低50文字を保証（超えたら即flush）
+    // 短すぎるセグメントを結合（30文字未満かつ次と合わせて80文字未満の場合のみ）
+    // 句点なし箇条書きは acc >= 30 で必ず次のセグメントから分離する
     this.segments = [];
     this.segmentTypes = [];
     let acc = '';
@@ -1078,13 +1101,23 @@ class TTSEngine {
         if (acc) { this.segments.push(acc); this.segmentTypes.push('normal'); acc = ''; }
         this.segments.push(rawSegs[i]);
         this.segmentTypes.push('heading');
+        continue;
+      }
+      const seg = rawSegs[i];
+      if (!acc) {
+        acc = seg;
+      } else if (acc.length < 30 && acc.length + seg.length < 80) {
+        acc += seg;
       } else {
-        acc = acc ? acc + rawSegs[i] : rawSegs[i];
-        if (acc.length >= 50 && /[。！？、]$/.test(acc)) {
-          this.segments.push(acc);
-          this.segmentTypes.push('normal');
-          acc = '';
-        }
+        this.segments.push(acc);
+        this.segmentTypes.push('normal');
+        acc = seg;
+      }
+      // 200文字超は強制flush
+      if (acc.length >= 200) {
+        this.segments.push(acc);
+        this.segmentTypes.push('normal');
+        acc = '';
       }
     }
     if (acc) { this.segments.push(acc); this.segmentTypes.push('normal'); }
@@ -1155,7 +1188,7 @@ class TTSEngine {
     if (v) utt.voice = v;
 
     utt.onboundary = e => { this._lastCharIndex = charOffset + (e.charIndex || 0); };
-    utt.onend = () => { if (this.isPlaying) this._speak(idx + 1); };
+    utt.onend = () => { if (this.isPlaying) setTimeout(() => this._speak(idx + 1), 150); };
     utt.onerror = e => {
       if (e.error !== 'interrupted' && e.error !== 'canceled') {
         if (this.isPlaying) this._speak(idx + 1);
