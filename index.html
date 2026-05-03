@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v43</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v44</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -543,7 +543,7 @@
       <div class="settings-label">フォールバック: Google Cloud TTS Neural2 APIキー</div>
       <input type="password" id="google-tts-key" placeholder="AIzaSy...（未設定時はフォールバックなし）" autocomplete="off"
         style="background:var(--elevated); color:var(--text); border:1px solid rgba(124,58,237,0.35); border-radius:8px; padding:10px 12px; font-size:13px; font-family:monospace; width:100%;">
-      <div class="settings-hint">VOICEVOXの1日ポイント上限（毎朝9時リセット）に達したとき自動で切り替えます。Google Cloud TTS Neural2。無料400万文字/月。翌朝9時以降は再びVOICEVOXを優先します。</div>
+      <div class="settings-hint">VOICEVOXの1日ポイント上限（毎朝9時リセット）に達したとき自動で切り替えます。Google Cloud TTS Neural2。無料100万文字/月。翌朝9時以降は再びVOICEVOXを優先します。</div>
       <div class="settings-label" style="margin-top:8px;">Neural2 音声</div>
       <select id="google-tts-voice-select"
         style="background:var(--elevated); color:var(--text); border:1px solid rgba(124,58,237,0.35); border-radius:8px; padding:8px 10px; font-size:13px; width:100%;">
@@ -1766,7 +1766,7 @@ function buildPlayerCloudVoiceSelect() {
   for (const [id, name] of vvSpeakers) html += `<option value="vv:${id}">${name}</option>`;
   html += '</optgroup>';
   if (googleTTSKey) {
-    html += '<optgroup label="🤖 Google TTS Neural2（無料400万字/月）">';
+    html += '<optgroup label="🤖 Google TTS Neural2（無料100万字/月）">';
     for (const [id, name] of gttsVoices) html += `<option value="gtts:${id}">${name}</option>`;
     html += '</optgroup>';
   }
