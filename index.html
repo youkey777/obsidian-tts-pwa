@@ -419,14 +419,14 @@
       letter-spacing: 0.3px;
     }
 
-    #voice-row {
+    #voice-row, #player-cloud-voice-row {
       display: flex;
       align-items: center;
       gap: 10px;
       padding: 0 16px 8px;
     }
-    #voice-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
-    #voice-select {
+    #voice-label, #player-voice-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+    #voice-select, #player-cloud-voice {
       flex: 1;
       background: var(--elevated);
       color: var(--text);
@@ -435,6 +435,7 @@
       padding: 6px 8px;
       font-size: 12px;
     }
+    #player-cloud-voice optgroup { color: #a78bfa; font-style: normal; font-weight: bold; }
 
     #toast {
       position: fixed;
@@ -463,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v42</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v43</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -597,6 +598,10 @@
     <div id="voice-row">
       <span id="voice-label">音声</span>
       <select id="voice-select"><option>読み込み中…</option></select>
+    </div>
+    <div id="player-cloud-voice-row" style="display:none;">
+      <span id="player-voice-label">音声</span>
+      <select id="player-cloud-voice"></select>
     </div>
     <div id="btn-row">
       <button class="btn" id="btn-prev">⏮</button>
@@ -785,6 +790,8 @@ class TTSEngine {
     this._voicevoxDailyFailed = false;
     this._voicevoxFailedAt = 0;
     this._googleTTSSwitchNotified = false;
+    // v43: 手動エンジン切替（'voicevox' = 通常+自動フォールバック / 'google-tts' = Google TTS強制）
+    this._ttsEngine = localStorage.getItem('obs-tts-engine') || 'voicevox';
     localStorage.removeItem('obs-tts-voicevox-failed-date'); // v39移行: 旧日付ベースキーを削除
     const _vvFailedAt = parseInt(localStorage.getItem('obs-tts-voicevox-failed-at') || '0');
     if (_vvFailedAt) {
@@ -821,30 +828,59 @@ class TTSEngine {
     this._inFlight.clear();
   }
 
+  // キャッシュキー: voicevox プロバイダ時は engine + voiceId を含めることで
+  // 手動エンジン切替時に古い音声が再利用されないようにする
+  _cacheKey(text) {
+    if (this._ttsProvider !== 'voicevox') return `${this._ttsProvider}:${text}`;
+    if (this._ttsEngine === 'google-tts') return `gtts:${this._googleTTSVoice}:${text}`;
+    return `vv:${this._voicevoxSpeaker}:${text}`;
+  }
+
   async _fetchCloudAudio(text) {
-    if (this._audioCache.has(text)) return this._audioCache.get(text);
-    if (this._inFlight.has(text)) return this._inFlight.get(text);
+    const key = this._cacheKey(text);
+    if (this._audioCache.has(key)) return this._audioCache.get(key);
+    if (this._inFlight.has(key)) return this._inFlight.get(key);
     const controller = new AbortController();
     this._controllers.add(controller);
     const promise = (async () => {
       try {
+        const useGoogleTTSDirect = this._ttsProvider === 'voicevox'
+          && this._ttsEngine === 'google-tts'
+          && this._googleTTSKey;
         const result = this._ttsProvider === 'openai'
           ? await this._fetchOpenAI(text, controller.signal)
           : this._ttsProvider === 'voicevox'
-            ? await this._fetchVoicevoxWithFallback(text, controller.signal)
+            ? (useGoogleTTSDirect
+                ? await this._fetchGoogleTTS(text, controller.signal)
+                : await this._fetchVoicevoxWithFallback(text, controller.signal))
             : await this._fetchGemini(text, controller.signal);
-        this._audioCache.set(text, result);
-        const actualProvider = (this._ttsProvider === 'voicevox' && this._voicevoxDailyFailed)
-          ? 'google-tts' : this._ttsProvider;
+        this._audioCache.set(key, result);
+        const actualProvider = useGoogleTTSDirect
+          ? 'google-tts'
+          : ((this._ttsProvider === 'voicevox' && this._voicevoxDailyFailed)
+              ? 'google-tts' : this._ttsProvider);
         addCloudChars(text.length, actualProvider);
         return result;
       } finally {
-        this._inFlight.delete(text);
+        this._inFlight.delete(key);
         this._controllers.delete(controller);
       }
     })();
-    this._inFlight.set(text, promise);
+    this._inFlight.set(key, promise);
     return promise;
+  }
+
+  // v43: プレイヤー画面からのエンジン即時切替
+  setEngine(engine, voiceId) {
+    this._ttsEngine = (engine === 'google-tts') ? 'google-tts' : 'voicevox';
+    if (this._ttsEngine === 'google-tts' && voiceId) this._googleTTSVoice = voiceId;
+    if (this._ttsEngine === 'voicevox' && voiceId) this._voicevoxSpeaker = voiceId;
+    localStorage.setItem('obs-tts-engine', this._ttsEngine);
+    if (this._ttsEngine === 'google-tts') {
+      localStorage.setItem('obs-tts-google-tts-voice', this._googleTTSVoice);
+    } else {
+      localStorage.setItem('obs-tts-voicevox-speaker', this._voicevoxSpeaker);
+    }
   }
 
   async _fetchGemini(text, signal) {
@@ -1000,7 +1036,7 @@ class TTSEngine {
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
     try {
-      const isCached = this._audioCache.has(this.segments[idx]);
+      const isCached = this._audioCache.has(this._cacheKey(this.segments[idx]));
       if (!isCached && this.onWaiting) this.onWaiting(true);
       const { data: b64, mimeType } = await this._fetchCloudAudio(this.segments[idx]);
       if (this.onWaiting) this.onWaiting(false);
@@ -1685,7 +1721,81 @@ function loadCloudSettings() {
   tts.setCloudKey(activeKey, geminiVoice, provider, openaiVoice, voicevoxSpeaker, googleTTSKey, googleTTSVoice);
   if (activeKey) $('cloud-status').textContent = '☁ クラウド音声が有効です';
   updateFallbackBanner();
+  // v43: プレイヤー画面のエンジン/音声 dropdown を構築
+  buildPlayerCloudVoiceSelect();
 }
+
+// v43: プレイヤー画面の「音声」dropdown を VOICEVOX/Google TTS の二系統で構築
+// 上段: VOICEVOX キャラクター（VOICEVOXキー必須）
+// 下段: Google TTS Neural2（フォールバック用 googleTTSKey が必須）
+// VOICEVOX プロバイダ + キー設定済みのときだけ表示。それ以外は従来の voice-row（端末音声）
+function buildPlayerCloudVoiceSelect() {
+  const provider = localStorage.getItem('obs-tts-provider') || 'voicevox';
+  const voicevoxKey = localStorage.getItem('obs-tts-voicevox-key') || '';
+  const googleTTSKey = localStorage.getItem('obs-tts-google-tts-key') || '';
+  const voicevoxSpeaker = localStorage.getItem('obs-tts-voicevox-speaker') || '3';
+  const googleTTSVoice = localStorage.getItem('obs-tts-google-tts-voice') || 'ja-JP-Neural2-B';
+  const engine = localStorage.getItem('obs-tts-engine') || 'voicevox';
+
+  const cloudRow = $('player-cloud-voice-row');
+  const nativeRow = $('voice-row');
+  const sel = $('player-cloud-voice');
+
+  // VOICEVOX プロバイダ＋キー設定時のみ統合 dropdown を表示
+  const showCloud = (provider === 'voicevox' && voicevoxKey);
+  cloudRow.style.display = showCloud ? '' : 'none';
+  nativeRow.style.display = showCloud ? 'none' : '';
+  if (!showCloud) return;
+
+  // 動的構築
+  const vvSpeakers = [
+    ['3','ずんだもん（ノーマル）'],['1','ずんだもん（あまあま）'],
+    ['7','ずんだもん（ツンツン）'],['5','ずんだもん（セクシー）'],
+    ['2','四国めたん（ノーマル）'],['0','四国めたん（あまあま）'],
+    ['6','四国めたん（ツンツン）'],['8','春日部つむぎ（ノーマル）'],
+    ['10','雨晴はう（ノーマル）'],['11','波音リツ（ノーマル）'],
+    ['13','青山龍星（ノーマル）'],['14','冥鳴ひまり（ノーマル）'],
+  ];
+  const gttsVoices = [
+    ['ja-JP-Neural2-B','Neural2-B（女性・推奨）'],
+    ['ja-JP-Neural2-C','Neural2-C（男性）'],
+    ['ja-JP-Neural2-D','Neural2-D（男性・低音）'],
+  ];
+
+  let html = '<optgroup label="🎭 VOICEVOX（無料・上限到達時はGoogle TTS自動切替）">';
+  for (const [id, name] of vvSpeakers) html += `<option value="vv:${id}">${name}</option>`;
+  html += '</optgroup>';
+  if (googleTTSKey) {
+    html += '<optgroup label="🤖 Google TTS Neural2（無料400万字/月）">';
+    for (const [id, name] of gttsVoices) html += `<option value="gtts:${id}">${name}</option>`;
+    html += '</optgroup>';
+  }
+  sel.innerHTML = html;
+
+  // 現在の選択を反映
+  sel.value = (engine === 'google-tts' && googleTTSKey)
+    ? `gtts:${googleTTSVoice}`
+    : `vv:${voicevoxSpeaker}`;
+}
+
+// プレイヤー画面の音声 dropdown 変更時にエンジン即時切替
+document.addEventListener('change', (e) => {
+  if (e.target.id !== 'player-cloud-voice') return;
+  const v = e.target.value;
+  const colon = v.indexOf(':');
+  if (colon < 0) return;
+  const prefix = v.slice(0, colon);
+  const voiceId = v.slice(colon + 1);
+  if (prefix === 'gtts') {
+    tts.setEngine('google-tts', voiceId);
+    $('google-tts-voice-select').value = voiceId;
+    showToast('🤖 Google TTS Neural2 に切替（次の文から反映）', 2500);
+  } else {
+    tts.setEngine('voicevox', voiceId);
+    $('voicevox-speaker-select').value = voiceId;
+    showToast('🎭 VOICEVOX に切替（次の文から反映）', 2500);
+  }
+});
 
 $('btn-test-key').addEventListener('click', async () => {
   const key = $('cloud-api-key').value.trim();
@@ -1789,6 +1899,8 @@ $('btn-save-settings').addEventListener('click', () => {
     $('cloud-status').textContent = '';
     showToast('APIキーを削除しました');
   }
+  // v43: プレイヤー画面のエンジン dropdown を再構築（キー変更時に反映）
+  buildPlayerCloudVoiceSelect();
   switchTab('preview');
 });
 
