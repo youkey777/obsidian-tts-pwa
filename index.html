@@ -463,7 +463,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v41</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v42</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -696,10 +696,28 @@ function preprocessMarkdown(raw) {
   // 区切り線
   t = t.replace(/^[-*_]{3,}\s*$/gm, '');
 
-  // リスト記号を改行に置換（段落分離を保証：スマホで箇条書きが繋がるのを防ぐ）
-  t = t.replace(/^[・•]\s*/gm, '\n');
-  t = t.replace(/^[\-\*\+]\s+/gm, '\n');
-  t = t.replace(/^\d+\.\s+/gm, '\n');
+  // リスト記号を行ごと正規化（テキスト残す＋句読点補完で _buildSegments の結合を防ぐ）
+  // - leading whitespace（半角・全角スペース・NBSP・タブ）を許容
+  // - 複数種類の bullet 記号に対応
+  // - bullet のみ（本文欠落）の行は完全削除
+  // - 本文がある場合: 記号を剥がし、句読点で終わらないなら 、 を補完
+  const BULLET_RE = /^[\s　 ]*[・•·‧∙●○◦▪▫►▻▶▷◆◇■□→]+[\s　 ]*([^\n]*?)[\s　 ]*$/gm;
+  t = t.replace(BULLET_RE, (_, body) => {
+    if (!body) return '';
+    if (/[。！？、．,.!?]$/.test(body)) return body;
+    return body + '、';
+  });
+  // 既存リスト記号（マークダウン形式）も同様に処理
+  t = t.replace(/^[\s　 ]*[\-\*\+][\s　 ]+([^\n]*?)[\s　 ]*$/gm, (_, body) => {
+    if (!body) return '';
+    if (/[。！？、．,.!?]$/.test(body)) return body;
+    return body + '、';
+  });
+  t = t.replace(/^[\s　 ]*\d+\.[\s　 ]+([^\n]*?)[\s　 ]*$/gm, (_, body) => {
+    if (!body) return '';
+    if (/[。！？、．,.!?]$/.test(body)) return body;
+    return body + '、';
+  });
 
   // ふりがな（括弧内ひらがなのみ）を除去：「国会（こっかい）」→「国会」
   // ※ 「（追い出すこと）」「（Citizens' Assembly）」等の説明文は残す
@@ -1449,7 +1467,63 @@ $('btn-load').addEventListener('click', () => {
 // ============================================================
 let _pendingClipboardText = '';
 
+// HTML クリップボードを構造保持しながらテキスト化
+// （D-Lab 等で plain text に bullet 本文が落ちるのを HTML から復元する）
+function htmlClipboardToText(html) {
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('script, style, noscript, iframe').forEach(el => el.remove());
+
+    // <br> → 改行
+    doc.querySelectorAll('br').forEach(br => br.replaceWith(doc.createTextNode('\n')));
+    // <hr> → 段落区切り
+    doc.querySelectorAll('hr').forEach(hr => hr.replaceWith(doc.createTextNode('\n\n')));
+    // <li> → bullet マーカー付きで段落化（後段の preprocessMarkdown が剥がす）
+    doc.querySelectorAll('li').forEach(li => {
+      const inner = li.textContent.replace(/\s+/g, ' ').trim();
+      li.replaceWith(doc.createTextNode('\n・' + inner + '\n'));
+    });
+    // ブロック要素の前後に改行を挿入
+    doc.querySelectorAll('p, div, h1, h2, h3, h4, h5, h6, blockquote, pre, ul, ol, tr, section, article').forEach(el => {
+      el.appendChild(doc.createTextNode('\n\n'));
+    });
+
+    return ((doc.body || doc.documentElement).textContent || '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  } catch (e) {
+    return null;
+  }
+}
+
 async function readClipboard() {
+  // 優先: navigator.clipboard.read() で HTML を取得
+  // （D-Lab 等のアプリは plain text に bullet 本文を落とす場合があるが、HTML には残っている）
+  if (navigator.clipboard?.read) {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        if (item.types.includes('text/html')) {
+          const blob = await item.getType('text/html');
+          const html = await blob.text();
+          const fromHtml = htmlClipboardToText(html);
+          if (fromHtml) return fromHtml;
+        }
+      }
+      // HTML がなければ plain text にフォールバック
+      for (const item of items) {
+        if (item.types.includes('text/plain')) {
+          const blob = await item.getType('text/plain');
+          const txt = (await blob.text())?.trim();
+          if (txt) return txt;
+        }
+      }
+    } catch (e) {
+      // read() が拒否/未対応 → readText() フォールバックへ
+    }
+  }
+  // フォールバック: readText（旧API・権限制限環境向け）
   if (!navigator.clipboard?.readText) {
     showToast('このブラウザではクリップボード読み込みに非対応です');
     return null;
