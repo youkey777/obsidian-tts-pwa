@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v44</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v45</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -734,6 +734,27 @@ function preprocessMarkdown(raw) {
   t = t.replace(/\uFE0F/g, '');                    // variation selector-16
   t = t.replace(/\u200D/g, '');                    // zero-width joiner
   t = t.replace(/[\u{1F000}-\u{1F0FF}]/gu, '');   // 麻雀・トランプ牌
+
+  // 読み上げ間調整: 区切り記号を読点に変換
+  // 長音符 ー (U+30FC) は単語の一部なので絶対に対象外
+  // ダッシュ・罫線系（連続も1個の読点に）
+  t = t.replace(/[‐-―−]+/g, '、');
+  // 全角スラッシュ・全角縦棒（前後の余分なスペースも吸収。改行は保持）
+  t = t.replace(/[ \t　]*[／｜][ \t　]*/g, '、');
+  // ASCIIスラッシュ・縦棒（前後にスペースがある区切り用途のみ）
+  t = t.replace(/[ \t]+[\/|][ \t]+/g, '、');
+  // ラベル形式のコロン: 直前が日本語文字（数字や英字の時刻 12:30 等は除外）
+  t = t.replace(/([぀-ゟ゠-ヿ一-鿿々〆ヵヶ][^：:\n、]{0,29})[：:][ \t　]*/g, '$1、');
+  // セミコロン
+  t = t.replace(/[；;]/g, '、');
+  // 読点直後のスペースを除去（改行は保持）
+  t = t.replace(/、[ \t　]+/g, '、');
+  // 連続読点を整理
+  t = t.replace(/[、，][ \t　]*[、，]/g, '、');
+  t = t.replace(/[、，]{2,}/g, '、');
+  // 行頭・行末の余分な読点
+  t = t.replace(/^[ \t　]*、/gm, '');
+  t = t.replace(/、[ \t　]*$/gm, '');
 
   // 余白整理
   t = t.replace(/\n{3,}/g, '\n\n');
