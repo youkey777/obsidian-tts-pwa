@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v45</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v46</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -748,6 +748,9 @@ function preprocessMarkdown(raw) {
   t = t.replace(/([぀-ゟ゠-ヿ一-鿿々〆ヵヶ][^：:\n、]{0,29})(?<![0-9０-９])[：:][ \t　]*/g, '$1、');
   // セミコロン
   t = t.replace(/[；;]/g, '、');
+  // 丸数字・囲み英数字の直後に読点を挿入（①概念 → ①、概念）
+  // 対象: ①-⑳ ⓪ ⓫-⓴ ⓵-⓾ ⓿ Ⓐ-Ⓩ ⓐ-ⓩ ㉑-㉟ ㊱-㊿ ❶-❿ ➀-➉ ➊-➓
+  t = t.replace(/([①-⓿❶-➓㉑-㉟㊱-㊿]+)(?=[^\s、。！？\n])/g, '$1、');
   // 読点直後のスペースを除去（改行は保持）
   t = t.replace(/、[ \t　]+/g, '、');
   // 連続読点を整理
