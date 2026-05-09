@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v49</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v50</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -753,6 +753,13 @@ function preprocessMarkdown(raw) {
   // 中黒「・」を読点に変換（人名「ジャン・ピエール」や並列「媒体・掲載・ソース」で間を空けて読ませる）
   // ※ 行頭の「・」は BULLET_RE で既に処理済みのため、ここに残るのは本文中の中黒のみ
   t = t.replace(/・/g, '、');
+  // ダブルクォート類を日本語の「」に変換（TTSが間を空けて読むようにする）
+  // “ ” (U+201C/U+201D), 〝 〟 (U+301D/U+301F), " (U+0022) を 「 」 に置換
+  // ※ シングルクォートは英語アポストロフィ（don't 等）と衝突するため対象外
+  t = t.replace(/[“〝]/g, '「');
+  t = t.replace(/[”〟]/g, '」');
+  // 直線ダブルクォート " (U+0022) はペアで「と」へ
+  t = t.replace(/"([^"\n]*)"/g, '「$1」');
   // ラベル形式のコロン: ラベル先頭が日本語文字 + コロン直前が数字以外（時刻 12:30 や比率 3:1 等は除外）
   t = t.replace(/([぀-ゟ゠-ヿ一-鿿々〆ヵヶ][^：:\n、]{0,29})(?<![0-9０-９])[：:][ \t　]*/g, '$1、');
   // セミコロン
