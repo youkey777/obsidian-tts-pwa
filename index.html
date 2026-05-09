@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v47</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v49</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -750,6 +750,9 @@ function preprocessMarkdown(raw) {
   t = t.replace(/[ \t　]*[／｜][ \t　]*/g, '、');
   // ASCIIスラッシュ・縦棒（前後にスペースがある区切り用途のみ）
   t = t.replace(/[ \t]+[\/|][ \t]+/g, '、');
+  // 中黒「・」を読点に変換（人名「ジャン・ピエール」や並列「媒体・掲載・ソース」で間を空けて読ませる）
+  // ※ 行頭の「・」は BULLET_RE で既に処理済みのため、ここに残るのは本文中の中黒のみ
+  t = t.replace(/・/g, '、');
   // ラベル形式のコロン: ラベル先頭が日本語文字 + コロン直前が数字以外（時刻 12:30 や比率 3:1 等は除外）
   t = t.replace(/([぀-ゟ゠-ヿ一-鿿々〆ヵヶ][^：:\n、]{0,29})(?<![0-9０-９])[：:][ \t　]*/g, '$1、');
   // セミコロン
@@ -1551,6 +1554,14 @@ function htmlClipboardToText(html) {
     doc.querySelectorAll('li').forEach(li => {
       const inner = li.textContent.replace(/\s+/g, ' ').trim();
       li.replaceWith(doc.createTextNode('\n・' + inner + '\n'));
+    });
+    // 見出し（h1-h6）末尾に「。」を補完してTTSが本文と連結しないようにする
+    // （D-Lab 等は markdown # ではなく styled <h2> で見出しを表現するため、preprocessMarkdown の # 補完が効かない）
+    doc.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
+      const text = (el.textContent || '').trim();
+      if (text && !/[。！？.!?]$/.test(text)) {
+        el.appendChild(doc.createTextNode('。'));
+      }
     });
     // ブロック要素の前後に改行を挿入
     doc.querySelectorAll('p, div, h1, h2, h3, h4, h5, h6, blockquote, pre, ul, ol, tr, section, article').forEach(el => {
