@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'obs-tts-v50';
+const CACHE_VERSION = 'obs-tts-v52';
 const CACHE_ASSETS = [
   './',
   './index.html',
@@ -33,6 +33,27 @@ self.addEventListener('fetch', event => {
     return;
   }
   if (event.request.method !== 'GET') return;
+
+  // HTMLナビゲーション（index.html）は network-first。
+  //   → 新バージョンを開いた時点でキャッシュも更新される。オフライン時のみキャッシュへフォールバック。
+  const isNavigation = event.request.mode === 'navigate'
+    || (event.request.destination === 'document')
+    || url.pathname.endsWith('/')
+    || url.pathname.endsWith('/index.html');
+  if (isNavigation && url.origin === self.location.origin) {
+    event.respondWith(
+      fetch(event.request)
+        .then(resp => {
+          const copy = resp.clone();
+          caches.open(CACHE_VERSION).then(c => c.put('./index.html', copy)).catch(() => {});
+          return resp;
+        })
+        .catch(() => caches.match('./index.html') || caches.match(event.request))
+    );
+    return;
+  }
+
+  // それ以外（アイコン・manifest 等）は cache-first
   event.respondWith(
     caches.match(event.request)
       .then(cached => cached || fetch(event.request)
