@@ -1419,7 +1419,7 @@ function releaseWakeLock() {
 //   スマホスリープ中もOSに「メディア再生中」と認識させてサスペンドを防ぐ
 // ============================================================
 let silentAudio = null;
-function createSilentWavBlob(seconds = 1, sampleRate = 8000) {
+function createSilentWavBlob(seconds = 1, sampleRate = 48000) {
   const numSamples = sampleRate * seconds;
   const buf = new ArrayBuffer(44 + numSamples * 2);
   const v = new DataView(buf);
@@ -1444,7 +1444,8 @@ function createSilentWavBlob(seconds = 1, sampleRate = 8000) {
 function initSilentAudio() {
   if (silentAudio) return;
   silentAudio = new Audio();
-  silentAudio.src = URL.createObjectURL(createSilentWavBlob(1, 8000));
+  // v53: 48kHzでデバイス標準と一致させ、TTS PCM(24kHz)が8kHzにダウンサンプルされる「曇り音」を回避
+  silentAudio.src = URL.createObjectURL(createSilentWavBlob(1, 48000));
   silentAudio.loop = true;
   silentAudio.preload = 'auto';
   silentAudio.volume = 0.001; // ほぼ無音だが0だとブラウザによってバッファ破棄される
