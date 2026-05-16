@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v54</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v55</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -623,6 +623,11 @@
 function preprocessMarkdown(raw) {
   let t = raw;
 
+  // v55: 不可視文字を早期に一括除去（zero-width 系が leading bullets の前に紛れ込むと
+  //   後段の BULLET_RE が `^[\s　 ]*` 範囲外で止まり、bullet 行が素通りして本文だけ消失する）
+  //   U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ, U+FEFF BOM, U+2060 WJ, U+180E MVS, U+FE0F VS-16
+  t = t.replace(/[​‌‍﻿⁠᠎️]/g, '');
+
   // ニュースノートのソースセクション全体を削除（### ソース 以降を次の見出しまで除去）
   {
     const lines = t.split('\n');
@@ -729,6 +734,10 @@ function preprocessMarkdown(raw) {
     return body + '、';
   });
 
+  // v55: 上のリスト処理を擦り抜けた leading bullets（HTML抽出失敗で本文ノードが取れなかった残骸等）
+  //   を最終除去。これがないと "•••ってことで…" のような bullet 残骸が segment 先頭に紛れ込む。
+  t = t.replace(/^[\s　 ]*[・•·‧∙●○◦▪▫►▻▶▷◆◇■□→]+[\s　 ]*/gm, '');
+
   // ふりがな（括弧内ひらがなのみ）を除去：「国会（こっかい）」→「国会」
   // ※ 「（追い出すこと）」「（Citizens' Assembly）」等の説明文は残す
   t = t.replace(/（[ぁ-んー・]{2,}）/g, '');
@@ -737,8 +746,6 @@ function preprocessMarkdown(raw) {
   t = t.replace(/[\u{1F300}-\u{1FFFF}]/gu, '');  // 絵文字メインブロック
   // 記号・デコ系（U+2776-U+2793 のディングバット丸数字 ❶-❿ ➀-➉ ➊-➓ は番号として保持）
   t = t.replace(/[\u{2600}-\u{2775}\u{2794}-\u{27BF}]/gu, '');
-  t = t.replace(/\uFE0F/g, '');                    // variation selector-16
-  t = t.replace(/\u200D/g, '');                    // zero-width joiner
   t = t.replace(/[\u{1F000}-\u{1F0FF}]/gu, '');   // 麻雀・トランプ牌
 
   // 読み上げ間調整: 区切り記号を読点に変換
@@ -1654,8 +1661,12 @@ function htmlClipboardToText(html) {
     // <hr> → 段落区切り
     doc.querySelectorAll('hr').forEach(hr => hr.replaceWith(doc.createTextNode('\n\n')));
     // <li> → bullet マーカー付きで段落化（後段の preprocessMarkdown が剥がす）
+    // v55: 内部に複数 block 要素がある場合に textContent が連結されすぎないよう境界に空白挿入。
+    //   空 li（bullet マーカーだけが入った装飾用 li 等）は完全削除し、本文なしの bullet 残骸を防ぐ。
     doc.querySelectorAll('li').forEach(li => {
-      const inner = li.textContent.replace(/\s+/g, ' ').trim();
+      li.querySelectorAll('p, div, br').forEach(b => b.before(doc.createTextNode(' ')));
+      const inner = (li.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!inner) { li.remove(); return; }
       li.replaceWith(doc.createTextNode('\n・' + inner + '\n'));
     });
     // 見出し（h1-h6）末尾に「。」を補完してTTSが本文と連結しないようにする
