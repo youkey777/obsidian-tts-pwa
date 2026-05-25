@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'obs-tts-v55';
+const CACHE_VERSION = 'obs-tts-v56';
 const CACHE_ASSETS = [
   './',
   './index.html',

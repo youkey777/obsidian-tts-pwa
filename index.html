@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v55</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v56</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -757,6 +757,15 @@ function preprocessMarkdown(raw) {
   t = t.replace(/[ \t　]*[／｜][ \t　]*/g, '、');
   // ASCIIスラッシュ・縦棒（前後にスペースがある区切り用途のみ）
   t = t.replace(/[ \t]+[\/|][ \t]+/g, '、');
+  // v56: U+2022「•」U+00B7「·」U+2027「‧」U+2219「∙」等の bullet 記号は、
+  //   改行が失われて「文字•文字•文字」と並列化したパターンで来ることが多い。
+  //   句点+改行に変換し、splitToChunks の文分割（。！？）で息継ぎが入るようにする。
+  //   人名で使われる U+30FB「・」は対象外（次の行で読点変換）。
+  //   例: "たとえば、•Instagramを制限する•TikTokを切る" → "たとえば。\nInstagramを制限する。\nTikTokを切る"
+  // (1) 直前が読点の場合は読点ごと「。\n」へ（連続読点「、。」を残さない）
+  t = t.replace(/[、，][ \t　]*[•·‧∙][ \t　]*(?=\S)/g, '。\n');
+  // (2) それ以外（文字直後）は「文字。\n」へ
+  t = t.replace(/([^\s、，。！？\n])[ \t　]*[•·‧∙][ \t　]*(?=\S)/g, '$1。\n');
   // 中黒「・」を読点に変換（人名「ジャン・ピエール」や並列「媒体・掲載・ソース」で間を空けて読ませる）
   // ※ 行頭の「・」は BULLET_RE で既に処理済みのため、ここに残るのは本文中の中黒のみ
   t = t.replace(/・/g, '、');
