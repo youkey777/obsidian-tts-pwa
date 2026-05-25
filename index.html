@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v56</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v57</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -757,18 +757,11 @@ function preprocessMarkdown(raw) {
   t = t.replace(/[ \t　]*[／｜][ \t　]*/g, '、');
   // ASCIIスラッシュ・縦棒（前後にスペースがある区切り用途のみ）
   t = t.replace(/[ \t]+[\/|][ \t]+/g, '、');
-  // v56: U+2022「•」U+00B7「·」U+2027「‧」U+2219「∙」等の bullet 記号は、
-  //   改行が失われて「文字•文字•文字」と並列化したパターンで来ることが多い。
-  //   句点+改行に変換し、splitToChunks の文分割（。！？）で息継ぎが入るようにする。
-  //   人名で使われる U+30FB「・」は対象外（次の行で読点変換）。
-  //   例: "たとえば、•Instagramを制限する•TikTokを切る" → "たとえば。\nInstagramを制限する。\nTikTokを切る"
-  // (1) 直前が読点の場合は読点ごと「。\n」へ（連続読点「、。」を残さない）
-  t = t.replace(/[、，][ \t　]*[•·‧∙][ \t　]*(?=\S)/g, '。\n');
-  // (2) それ以外（文字直後）は「文字。\n」へ
-  t = t.replace(/([^\s、，。！？\n])[ \t　]*[•·‧∙][ \t　]*(?=\S)/g, '$1。\n');
-  // 中黒「・」を読点に変換（人名「ジャン・ピエール」や並列「媒体・掲載・ソース」で間を空けて読ませる）
-  // ※ 行頭の「・」は BULLET_RE で既に処理済みのため、ここに残るのは本文中の中黒のみ
-  t = t.replace(/・/g, '、');
+  // v57: bullet 系記号（・• 等）は全て読点に統一変換（v56の句点化は本文断片化と消失リスクがあるため撤回）。
+  //   息継ぎ確保は _buildSegments の長文「、」分割で行う。
+  //   ※ 行頭の bullet は BULLET_RE で既に処理済みのため、ここに残るのは本文中の中黒・bullet のみ
+  //   対象: U+30FB（・）U+2022（•）U+00B7（·）U+2027（‧）U+2219（∙）
+  t = t.replace(/[・•·‧∙]/g, '、');
   // ダブルクォート類を日本語の「」に変換（TTSが間を空けて読むようにする）
   // “ ” (U+201C/U+201D), 〝 〟 (U+301D/U+301F), " (U+0022) を 「 」 に置換
   // ※ シングルクォートは英語アポストロフィ（don't 等）と衝突するため対象外
@@ -1197,10 +1190,18 @@ class TTSEngine {
         rawSegs.push(clean);
         rawTypes.push('heading');
       } else {
-        // 「、」では分割せず「。！？」のみで文単位に分割（息継ぎなし問題を解消）
+        // 「。！？」で文単位に分割。さらに v57: 80文字を超える文は「、」でも分割して息継ぎ確保。
+        //   bullet 並列 "A、B、C、D" のような連結長文で、間が読点だけだと一息に読まれて聞き取れない問題に対処。
         for (const s of clean.split(/(?<=[。！？])\s*/)) {
-          if (s.trim()) {
-            rawSegs.push(s.trim());
+          const s1 = s.trim();
+          if (!s1) continue;
+          if (s1.length > 80) {
+            for (const sub of s1.split(/(?<=、)\s*/)) {
+              const t = sub.trim();
+              if (t) { rawSegs.push(t); rawTypes.push('normal'); }
+            }
+          } else {
+            rawSegs.push(s1);
             rawTypes.push('normal');
           }
         }
@@ -1664,6 +1665,20 @@ function htmlClipboardToText(html) {
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('script, style, noscript, iframe').forEach(el => el.remove());
+
+    // v57: 強調・装飾系のインライン要素は中身を保持してunwrap（D-Lab 等で強調文が
+    //   ラップされていて textContent 抽出時に欠落するケースの予防策）。
+    //   ※ ループで親階層のラッパーも順次unwrapするため、querySelectorAll を while で回す。
+    const UNWRAP_TAGS = 'mark,strong,em,b,i,u,small,sub,sup,font,abbr,cite,kbd,samp,var,ins,del,s,strike,big';
+    let unwrapPass = 0;
+    while (unwrapPass < 5 && doc.querySelector(UNWRAP_TAGS)) {
+      doc.querySelectorAll(UNWRAP_TAGS).forEach(el => {
+        const text = el.textContent || '';
+        if (text) el.replaceWith(doc.createTextNode(text));
+        else el.remove();
+      });
+      unwrapPass++;
+    }
 
     // <br> → 改行
     doc.querySelectorAll('br').forEach(br => br.replaceWith(doc.createTextNode('\n')));
