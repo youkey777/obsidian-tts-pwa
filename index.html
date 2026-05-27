@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v58</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v59</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -1687,6 +1687,16 @@ function htmlClipboardToText(html) {
     doc.querySelectorAll('br').forEach(br => br.replaceWith(doc.createTextNode('\n')));
     // <hr> → 段落区切り
     doc.querySelectorAll('hr').forEach(hr => hr.replaceWith(doc.createTextNode('\n\n')));
+    // v59: <tr> をセル単位に分解して「セル1、セル2、セル3。」に整形。
+    //   これがないと D-Lab 等のHTML表で <td>/<th> が無区切りで連結し
+    //   「ながら食いの種類例食事中の影響受動的な注意散漫…」のように1段落に潰れる。
+    doc.querySelectorAll('tr').forEach(tr => {
+      const cells = [...tr.querySelectorAll('td, th')]
+        .map(c => (c.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter(c => c && !/^[-:\s]+$/.test(c));
+      if (!cells.length) { tr.remove(); return; }
+      tr.replaceWith(doc.createTextNode('\n' + cells.join('、') + '。\n'));
+    });
     // <li> → bullet マーカー付きで段落化（後段の preprocessMarkdown が剥がす）
     // v55: 内部に複数 block 要素がある場合に textContent が連結されすぎないよう境界に空白挿入。
     //   空 li（bullet マーカーだけが入った装飾用 li 等）は完全削除し、本文なしの bullet 残骸を防ぐ。
@@ -1705,7 +1715,8 @@ function htmlClipboardToText(html) {
       }
     });
     // ブロック要素の前後に改行を挿入
-    doc.querySelectorAll('p, div, h1, h2, h3, h4, h5, h6, blockquote, pre, ul, ol, tr, section, article').forEach(el => {
+    // v59: tr は上で text node に置換済みのためリストから除外
+    doc.querySelectorAll('p, div, h1, h2, h3, h4, h5, h6, blockquote, pre, ul, ol, table, section, article').forEach(el => {
       el.appendChild(doc.createTextNode('\n\n'));
     });
 
