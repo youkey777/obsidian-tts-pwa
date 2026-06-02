@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v59</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v60</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -610,6 +610,7 @@
       <button class="btn" id="btn-next">⏭</button>
     </div>
     <div id="loading-indicator" style="display:none; text-align:center; font-size:12px; color:#a78bfa; padding:4px 0; letter-spacing:0.02em;">⏳ 音声を準備中...</div>
+    <div id="playback-debug" style="display:none; text-align:center; font-size:11px; color:#64748b; padding:2px 0;"></div>
   </div>
 
 </div>
@@ -811,6 +812,60 @@ function pcmToWav(b64, sampleRate = 24000) {
   return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
 
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function writeAscii(view, offset, s) {
+  for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+}
+
+function floatToWavBlob(samples, sampleRate) {
+  const numCh = 1, bps = 16;
+  const dataBytes = samples.length * 2;
+  const buf = new ArrayBuffer(44 + dataBytes);
+  const v = new DataView(buf);
+  writeAscii(v, 0, 'RIFF'); v.setUint32(4, 36 + dataBytes, true);
+  writeAscii(v, 8, 'WAVE'); writeAscii(v, 12, 'fmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, numCh, true);
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * numCh * bps / 8, true);
+  v.setUint16(32, numCh * bps / 8, true);
+  v.setUint16(34, bps, true);
+  writeAscii(v, 36, 'data'); v.setUint32(40, dataBytes, true);
+  let p = 44;
+  for (let i = 0; i < samples.length; i++, p += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(p, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+function isAndroidDevice() {
+  return /Android/i.test(navigator.userAgent || '');
+}
+
+function logPlaybackEvent(message) {
+  const ts = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const text = `${ts} ${message}`;
+  console.info('[ObsTTS]', text);
+  try {
+    const logs = JSON.parse(localStorage.getItem('obs-tts-playback-log') || '[]');
+    logs.push(text);
+    localStorage.setItem('obs-tts-playback-log', JSON.stringify(logs.slice(-30)));
+  } catch {}
+  const el = document.getElementById('playback-debug');
+  if (el) {
+    el.textContent = text;
+    el.style.display = '';
+  }
+}
+
 // ============================================================
 // TTS ENGINE
 // ============================================================
@@ -836,6 +891,19 @@ class TTSEngine {
     this._controllers = new Set();
     this._fetchedUpTo = -1;
     this._currentAudio = null;
+    this._currentAudioIsContinuous = false;
+    this._primedAudioUrl = null;
+    this._continuousUrl = null;
+    this._continuousKey = '';
+    this._continuousTimeline = [];
+    this._continuousStartIndex = 0;
+    this._continuousEndIndex = 0;
+    this._nextContinuousChunk = null;
+    this._nextContinuousPromise = null;
+    this._continuousBuildToken = 0;
+    this._settingsGenerationId = 0;
+    this._contentGenerationId = 0;
+    this._playToken = 0;
     this._sharedAudioCtx = null;
     this._googleTTSKey = '';
     this._googleTTSVoice = 'ja-JP-Neural2-B';
@@ -865,6 +933,9 @@ class TTSEngine {
   }
 
   setCloudKey(key, voice, provider, openaiVoice, voicevoxSpeaker, googleTTSKey, googleTTSVoice) {
+    const before = this._audioSettingsKey();
+    const oldCloudKey = this._cloudKey;
+    const oldGoogleTTSKey = this._googleTTSKey;
     this._ttsProvider = provider || 'voicevox';
     this._cloudKey = key || '';
     if (voice) this._cloudVoice = voice;
@@ -872,6 +943,9 @@ class TTSEngine {
     if (voicevoxSpeaker) this._voicevoxSpeaker = voicevoxSpeaker;
     if (googleTTSKey !== undefined) this._googleTTSKey = googleTTSKey || '';
     if (googleTTSVoice) this._googleTTSVoice = googleTTSVoice;
+    if (before !== this._audioSettingsKey() || oldCloudKey !== this._cloudKey || oldGoogleTTSKey !== this._googleTTSKey) {
+      this._touchAudioSettings();
+    }
     if (!key) { this._audioCache.clear(); this._inFlight.clear(); this._fetchedUpTo = -1; }
   }
 
@@ -883,13 +957,57 @@ class TTSEngine {
 
   // キャッシュキー: voicevox プロバイダ時は engine + voiceId を含めることで
   // 手動エンジン切替時に古い音声が再利用されないようにする
+  _audioSettingsKey() {
+    if (this._ttsProvider === 'openai') {
+      return `openai:${this._openaiVoice || 'nova'}:${this.rate.toFixed(2)}`;
+    }
+    if (this._ttsProvider !== 'voicevox') {
+      return `gemini:${this._cloudVoice || 'Kore'}`;
+    }
+    if (this._ttsEngine === 'google-tts') {
+      return `gtts:${this._googleTTSVoice || 'ja-JP-Neural2-B'}`;
+    }
+    const fallbackState = this._voicevoxDailyFailed ? 'fallback-gtts' : 'voicevox-primary';
+    return `vv:${this._voicevoxSpeaker || '3'}:${this._googleTTSVoice || 'ja-JP-Neural2-B'}:${fallbackState}`;
+  }
+
   _cacheKey(text) {
-    if (this._ttsProvider !== 'voicevox') return `${this._ttsProvider}:${text}`;
-    if (this._ttsEngine === 'google-tts') return `gtts:${this._googleTTSVoice}:${text}`;
-    return `vv:${this._voicevoxSpeaker}:${text}`;
+    return `${this._audioSettingsKey()}:${text}`;
+  }
+
+  _touchAudioSettings() {
+    this._settingsGenerationId++;
+    this._audioCache.clear();
+    this._abortAll();
+    this._fetchedUpTo = -1;
+    if (this.isPlaying && isAndroidDevice() && !this._shouldUseContinuousAudio()) {
+      const restartIndex = Math.max(0, Math.min(this.currentIndex, this.segments.length - 1));
+      this._playToken++;
+      this._clearContinuousAudio();
+      this.isPlaying = true;
+      this.currentIndex = restartIndex;
+      this._speak(restartIndex);
+      return;
+    }
+    if (this.isPlaying && this._currentAudioIsContinuous) {
+      const restartIndex = Math.max(0, Math.min(this.currentIndex, this.segments.length - 1));
+      if (this._shouldUseContinuousAudio()) {
+        this._restartContinuousAudioFromCurrent();
+      } else {
+        this._playToken++;
+        this._clearContinuousAudio();
+        this.isPlaying = true;
+        this.currentIndex = restartIndex;
+        this._speak(restartIndex);
+      }
+      return;
+    }
+    if (this.isPlaying) this._invalidateFutureContinuousAudio();
+    else this._clearContinuousAudio();
   }
 
   async _fetchCloudAudio(text) {
+    if (this._ttsProvider === 'voicevox' && this._ttsEngine !== 'google-tts') this._isVoicevoxAvailable();
     const key = this._cacheKey(text);
     if (this._audioCache.has(key)) return this._audioCache.get(key);
     if (this._inFlight.has(key)) return this._inFlight.get(key);
@@ -907,7 +1025,9 @@ class TTSEngine {
                 ? await this._fetchGoogleTTS(text, controller.signal)
                 : await this._fetchVoicevoxWithFallback(text, controller.signal))
             : await this._fetchGemini(text, controller.signal);
-        this._audioCache.set(key, result);
+        const finalKey = this._cacheKey(text);
+        this._audioCache.set(finalKey, result);
+        if (finalKey !== key) this._audioCache.delete(key);
         const actualProvider = useGoogleTTSDirect
           ? 'google-tts'
           : ((this._ttsProvider === 'voicevox' && this._voicevoxDailyFailed)
@@ -925,6 +1045,7 @@ class TTSEngine {
 
   // v43: プレイヤー画面からのエンジン即時切替
   setEngine(engine, voiceId) {
+    const before = this._audioSettingsKey();
     this._ttsEngine = (engine === 'google-tts') ? 'google-tts' : 'voicevox';
     if (this._ttsEngine === 'google-tts' && voiceId) this._googleTTSVoice = voiceId;
     if (this._ttsEngine === 'voicevox' && voiceId) this._voicevoxSpeaker = voiceId;
@@ -934,6 +1055,7 @@ class TTSEngine {
     } else {
       localStorage.setItem('obs-tts-voicevox-speaker', this._voicevoxSpeaker);
     }
+    if (before !== this._audioSettingsKey()) this._touchAudioSettings();
   }
 
   async _fetchGemini(text, signal) {
@@ -1078,6 +1200,415 @@ class TTSEngine {
     return { data: btoa(binary), mimeType: 'audio/mpeg' };
   }
 
+  _shouldUseContinuousAudio() {
+    return isAndroidDevice() && !!this._cloudKey;
+  }
+
+  _cloudPlaybackRate() {
+    return this._ttsProvider === 'openai' ? 1 : this.rate;
+  }
+
+  _restartContinuousAudioFromCurrent() {
+    const restartIndex = Math.max(0, Math.min(this.currentIndex, this.segments.length - 1));
+    if (!this._shouldUseContinuousAudio()) {
+      this._clearContinuousAudio();
+      this.isPlaying = true;
+      this.currentIndex = restartIndex;
+      this._speak(restartIndex);
+      return;
+    }
+    this._playToken++;
+    this._clearContinuousAudio();
+    this.isPlaying = true;
+    this.currentIndex = restartIndex;
+    this._playContinuous(restartIndex);
+  }
+
+  _continuousCacheKey(startIndex) {
+    return `${this._contentGenerationId}:${startIndex}:${this._audioSettingsKey()}:${this.rate.toFixed(2)}`;
+  }
+
+  _clearContinuousBuffer() {
+    this._continuousBuildToken++;
+    this._abortAll();
+    if (this._continuousUrl) {
+      URL.revokeObjectURL(this._continuousUrl);
+    }
+    this._clearNextContinuousChunk();
+    this._continuousUrl = null;
+    this._continuousKey = '';
+    this._continuousTimeline = [];
+    this._continuousStartIndex = 0;
+    this._continuousEndIndex = 0;
+  }
+
+  _clearNextContinuousChunk() {
+    if (this._nextContinuousChunk?.url) URL.revokeObjectURL(this._nextContinuousChunk.url);
+    this._nextContinuousChunk = null;
+    this._nextContinuousPromise = null;
+  }
+
+  _discardContinuousChunk(chunk) {
+    if (!chunk) return;
+    if (this._nextContinuousChunk === chunk) {
+      this._nextContinuousChunk = null;
+      this._nextContinuousPromise = null;
+    }
+    if (chunk.url && this._continuousUrl !== chunk.url) URL.revokeObjectURL(chunk.url);
+  }
+
+  _invalidateFutureContinuousAudio() {
+    this._continuousBuildToken++;
+    this._clearNextContinuousChunk();
+    this._fetchedUpTo = -1;
+  }
+
+  _clearContinuousAudio() {
+    if (this._currentAudio) {
+      this._currentAudio.pause();
+      this._currentAudio.removeAttribute('src');
+      this._currentAudio.load();
+      this._currentAudio = null;
+      this._currentAudioIsContinuous = false;
+    }
+    if (this._primedAudioUrl) {
+      URL.revokeObjectURL(this._primedAudioUrl);
+      this._primedAudioUrl = null;
+    }
+    this._clearContinuousBuffer();
+  }
+
+  _primeContinuousAudioElement() {
+    if (!this._shouldUseContinuousAudio()) return;
+    if (this._currentAudio) {
+      if (this._primedAudioUrl && this._currentAudio.src === this._primedAudioUrl && this._currentAudio.paused) {
+        this._currentAudio.loop = true;
+        this._currentAudio.play().catch(e => logPlaybackEvent(`audio prime resume failed: ${e.message || e}`));
+      }
+      return;
+    }
+    this._primedAudioUrl = URL.createObjectURL(floatToWavBlob(new Float32Array(2400), 24000));
+    this._currentAudio = new Audio(this._primedAudioUrl);
+    this._currentAudio.preload = 'auto';
+    this._currentAudio.loop = true;
+    this._currentAudio.play()
+      .then(() => {
+        if (this._currentAudio && this._currentAudio.src === this._primedAudioUrl) {
+          logPlaybackEvent('audio primed loop playing');
+        }
+      })
+      .catch(e => logPlaybackEvent(`audio prime failed: ${e.message || e}`));
+  }
+
+  async _decodeCloudAudio({ data, mimeType }) {
+    const isPcm = mimeType && (mimeType.includes('pcm') || mimeType.toLowerCase().includes('l16'));
+    if (isPcm) {
+      const sampleRate = parseInt(mimeType?.match(/rate=(\d+)/)?.[1] || '24000', 10);
+      const pcm = b64ToBytes(data);
+      const samples = Math.floor(pcm.length / 2);
+      const ctx = this._sharedAudioCtx || new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'playback' });
+      const audioBuf = ctx.createBuffer(1, samples, sampleRate);
+      const ch = audioBuf.getChannelData(0);
+      const dv = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+      for (let i = 0; i < samples; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
+      return audioBuf;
+    }
+
+    this._ensureAudioCtx();
+    const ctx = this._sharedAudioCtx;
+    const bytes = b64ToBytes(data);
+    const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    return await ctx.decodeAudioData(copy);
+  }
+
+  _bufferToMono(buffer, targetSampleRate) {
+    const length = Math.max(1, Math.round(buffer.duration * targetSampleRate));
+    const out = new Float32Array(length);
+    const ratio = buffer.sampleRate / targetSampleRate;
+    const channels = Math.max(1, buffer.numberOfChannels || 1);
+    const data = [];
+    for (let ch = 0; ch < channels; ch++) data.push(buffer.getChannelData(ch));
+
+    for (let i = 0; i < length; i++) {
+      const pos = i * ratio;
+      const idx = Math.floor(pos);
+      const frac = pos - idx;
+      let sample = 0;
+      for (let ch = 0; ch < channels; ch++) {
+        const arr = data[ch];
+        const a = arr[Math.min(idx, arr.length - 1)] || 0;
+        const b = arr[Math.min(idx + 1, arr.length - 1)] || a;
+        sample += a + (b - a) * frac;
+      }
+      out[i] = sample / channels;
+    }
+    return out;
+  }
+
+  async _buildContinuousAudio(startIndex, { store = true, settingsToken = this._settingsGenerationId, expectedKey = null } = {}) {
+    const start = Math.max(0, Math.min(startIndex, this.segments.length - 1));
+    const key = expectedKey || this._continuousCacheKey(start);
+    const assertFresh = () => {
+      if (!this.isPlaying) throw new DOMException('Playback stopped', 'AbortError');
+      if (this._settingsGenerationId !== settingsToken || this._continuousCacheKey(start) !== key) {
+        throw new DOMException('Audio settings changed', 'AbortError');
+      }
+    };
+    if (store && this._continuousUrl && this._continuousKey === key) {
+      return {
+        url: this._continuousUrl,
+        timeline: this._continuousTimeline,
+        startIndex: this._continuousStartIndex,
+        endIndex: this._continuousEndIndex,
+        key: this._continuousKey
+      };
+    }
+
+    if (store) this._clearContinuousBuffer();
+    logPlaybackEvent(`${store ? '再生' : '次'}チャンク準備開始: ${start + 1}/${this.segments.length}`);
+    const items = [];
+    let targetSampleRate = 0;
+    let builtSeconds = 0;
+    let endIndex = start;
+    const maxSeconds = 60;
+    const maxSegments = 6;
+
+    for (let i = start; i < this.segments.length; i++) {
+      assertFresh();
+      const result = await this._fetchCloudAudio(this.segments[i]);
+      assertFresh();
+      const buffer = await this._decodeCloudAudio(result);
+      assertFresh();
+      if (!targetSampleRate) targetSampleRate = buffer.sampleRate || 24000;
+      const mono = this._bufferToMono(buffer, targetSampleRate);
+      const pauseMultiplier = this._ttsProvider === 'openai' ? 1 : this.rate;
+      const pauseSec = (this.segmentTypes[i] === 'heading' ? 0.3 : 0.15) * pauseMultiplier;
+      items.push({ index: i, mono, pauseSamples: Math.round(pauseSec * targetSampleRate) });
+      builtSeconds += mono.length / targetSampleRate + pauseSec;
+      endIndex = i + 1;
+      if ((i - start + 1) % 5 === 0) logPlaybackEvent(`${store ? '再生' : '次'}チャンク準備中: ${i + 1}/${this.segments.length}`);
+      if (builtSeconds >= maxSeconds || items.length >= maxSegments) break;
+    }
+
+    const totalSamples = items.reduce((sum, item, idx) =>
+      sum + item.mono.length + (idx === items.length - 1 ? 0 : item.pauseSamples), 0);
+    const joined = new Float32Array(totalSamples);
+    const timeline = [];
+    let offset = 0;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const startSec = offset / targetSampleRate;
+      joined.set(item.mono, offset);
+      offset += item.mono.length;
+      timeline.push({ index: item.index, start: startSec, end: offset / targetSampleRate });
+      if (i < items.length - 1) offset += item.pauseSamples;
+    }
+
+    const blob = floatToWavBlob(joined, targetSampleRate);
+    const chunk = {
+      url: URL.createObjectURL(blob),
+      timeline,
+      startIndex: start,
+      endIndex,
+      key,
+      duration: joined.length / targetSampleRate
+    };
+    logPlaybackEvent(`${store ? '再生' : '次'}チャンク準備完了: ${start + 1}-${endIndex}/${this.segments.length}, ${Math.round(chunk.duration)}秒`);
+    return chunk;
+  }
+
+  _adoptContinuousChunk(chunk) {
+    if (this._continuousUrl && this._continuousUrl !== chunk.url) URL.revokeObjectURL(this._continuousUrl);
+    this._continuousUrl = chunk.url;
+    this._continuousKey = chunk.key;
+    this._continuousTimeline = chunk.timeline;
+    this._continuousStartIndex = chunk.startIndex;
+    this._continuousEndIndex = chunk.endIndex;
+    if (this._nextContinuousChunk?.url === chunk.url) {
+      this._nextContinuousChunk = null;
+      this._nextContinuousPromise = null;
+    }
+    this._pruneAudioCache(chunk.startIndex);
+  }
+
+  _pruneAudioCache(keepFromIndex) {
+    const pruneBefore = Math.max(0, keepFromIndex - 5);
+    for (let i = 0; i < pruneBefore; i++) {
+      this._audioCache.delete(this._cacheKey(this.segments[i]));
+    }
+  }
+
+  _syncContinuousProgress() {
+    if (!this._currentAudioIsContinuous || !this._currentAudio || !this._continuousTimeline.length) return;
+    const t = this._currentAudio.currentTime || 0;
+    let active = this._continuousTimeline[0];
+    for (const item of this._continuousTimeline) {
+      if (t >= item.start) active = item;
+      if (t < item.end) break;
+    }
+    if (active && active.index !== this.currentIndex) {
+      this.currentIndex = active.index;
+      if (this.onSegmentChange) this.onSegmentChange(active.index);
+    }
+  }
+
+  _maybePrepareNextContinuous() {
+    if (!this._currentAudioIsContinuous || !this._currentAudio) return;
+    if (this._continuousEndIndex >= this.segments.length) return;
+    if (this._nextContinuousChunk || this._nextContinuousPromise) return;
+    const duration = this._currentAudio.duration || 0;
+    const remaining = duration ? duration - this._currentAudio.currentTime : Infinity;
+    if (remaining > 45 && this._currentAudio.currentTime < duration * 0.6) return;
+    const start = this._continuousEndIndex;
+    const token = this._continuousBuildToken;
+    const settingsToken = this._settingsGenerationId;
+    const expectedKey = this._continuousCacheKey(start);
+    this._nextContinuousPromise = this._buildContinuousAudio(start, { store: false, settingsToken, expectedKey })
+      .then(chunk => {
+        if (!chunk
+          || this._continuousBuildToken !== token
+          || this._settingsGenerationId !== settingsToken
+          || this._continuousCacheKey(start) !== expectedKey
+          || !this.isPlaying
+          || chunk.startIndex !== start
+          || chunk.key !== expectedKey
+          || this._continuousEndIndex !== start) {
+          this._discardContinuousChunk(chunk);
+          this._nextContinuousPromise = null;
+          return null;
+        }
+        this._nextContinuousChunk = chunk;
+        this._nextContinuousPromise = null;
+        return chunk;
+      })
+      .catch(e => {
+        this._nextContinuousPromise = null;
+        logPlaybackEvent(`次チャンク準備失敗: ${e.message || e}`);
+        return null;
+      });
+  }
+
+  async _playContinuous(startIndex, chunk = null) {
+    const token = ++this._playToken;
+    const settingsToken = this._settingsGenerationId;
+    const expectedKey = this._continuousCacheKey(startIndex);
+    try {
+      if (this.onWaiting) this.onWaiting(true);
+      if (chunk && (chunk.startIndex !== startIndex || chunk.key !== expectedKey)) {
+        this._discardContinuousChunk(chunk);
+        chunk = null;
+      }
+      chunk = chunk || await this._buildContinuousAudio(startIndex, { settingsToken, expectedKey });
+      const freshChunk = this.isPlaying
+        && token === this._playToken
+        && this._settingsGenerationId === settingsToken
+        && this._continuousCacheKey(startIndex) === expectedKey
+        && chunk?.startIndex === startIndex
+        && chunk?.key === expectedKey;
+      if (!freshChunk) {
+        this._discardContinuousChunk(chunk);
+        return;
+      }
+      this._adoptContinuousChunk(chunk);
+
+      if (!this._currentAudio) this._currentAudio = new Audio();
+      this._currentAudio.loop = false;
+      this._currentAudio.src = chunk.url;
+      if (this._primedAudioUrl) {
+        URL.revokeObjectURL(this._primedAudioUrl);
+        this._primedAudioUrl = null;
+      }
+      this._currentAudioIsContinuous = true;
+      this._currentAudio.preload = 'auto';
+      this._currentAudio.playbackRate = this._cloudPlaybackRate();
+      this._currentAudio.ontimeupdate = () => {
+        this._syncContinuousProgress();
+        this._maybePrepareNextContinuous();
+      };
+      this._currentAudio.onpause = () => logPlaybackEvent('audio pause');
+      this._currentAudio.onerror = () => logPlaybackEvent('audio error');
+      this._currentAudio.onended = () => {
+        logPlaybackEvent('continuous ended');
+        if (this.isPlaying && this._continuousEndIndex < this.segments.length) {
+          const expectedStart = this._continuousEndIndex;
+          const endedPlayToken = this._playToken;
+          const endedBuildToken = this._continuousBuildToken;
+          const endedSettingsToken = this._settingsGenerationId;
+          const endedAudio = this._currentAudio;
+          this.currentIndex = expectedStart;
+          (async () => {
+            let next = this._nextContinuousChunk;
+            if (!next && this._nextContinuousPromise) next = await this._nextContinuousPromise;
+            const stillCurrent = this.isPlaying
+              && this._playToken === endedPlayToken
+              && this._continuousBuildToken === endedBuildToken
+              && this._settingsGenerationId === endedSettingsToken
+              && this._continuousEndIndex === expectedStart
+              && this._currentAudio === endedAudio;
+            if (!stillCurrent) {
+              this._discardContinuousChunk(next);
+              return;
+            }
+            if (next && next.startIndex === expectedStart && next.key === this._continuousCacheKey(expectedStart)) {
+              this._playContinuous(expectedStart, next);
+            } else {
+              this._discardContinuousChunk(next);
+              this._playContinuous(expectedStart);
+            }
+          })();
+          return;
+        }
+        this.isPlaying = false;
+        this.currentIndex = 0;
+        this._currentAudio = null;
+        this._currentAudioIsContinuous = false;
+        if (this.onSegmentChange) this.onSegmentChange(-1);
+        if (this.onEnd) this.onEnd();
+      };
+
+      this.currentIndex = startIndex;
+      if (this.onSegmentChange) this.onSegmentChange(startIndex);
+      await this._currentAudio.play();
+      logPlaybackEvent('continuous playing');
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        if (this.isPlaying && token === this._playToken) {
+          if (this._shouldUseContinuousAudio()) {
+            this._playContinuous(startIndex);
+          } else {
+            const fallbackIndex = Math.max(0, Math.min(startIndex, this.segments.length - 1));
+            this._clearContinuousAudio();
+            this.currentIndex = fallbackIndex;
+            this._speak(fallbackIndex);
+          }
+        }
+        return;
+      }
+      logPlaybackEvent(`continuous failed: ${e.message || e}`);
+      const fallbackIndex = Math.max(0, Math.min(startIndex, this.segments.length - 1));
+      this._clearContinuousAudio();
+      this.currentIndex = fallbackIndex;
+      this.isPlaying = false;
+      if (this.onSegmentChange) this.onSegmentChange(-1);
+      showToast('⚠ ロック再生の準備に失敗しました。通常再生に戻します', 5000);
+      this.isPlaying = true;
+      this._speakCloud(fallbackIndex);
+    } finally {
+      if (this.onWaiting) this.onWaiting(false);
+    }
+  }
+
+  _seekContinuousIfBuffered(idx) {
+    if (!this._currentAudioIsContinuous || !this._currentAudio || !this._continuousTimeline.length) return false;
+    const item = this._continuousTimeline.find(t => t.index === idx);
+    if (!item) return false;
+    this.currentIndex = idx;
+    this._currentAudio.currentTime = item.start;
+    if (this.onSegmentChange) this.onSegmentChange(idx);
+    logPlaybackEvent(`continuous seek: ${idx + 1}/${this.segments.length}`);
+    return true;
+  }
+
   async _speakCloud(idx) {
     if (idx >= this.segments.length) {
       this.isPlaying = false;
@@ -1116,7 +1647,7 @@ class TTSEngine {
         for (let i = 0; i < samples; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
         const source = ctx.createBufferSource();
         source.buffer = audioBuf;
-        source.playbackRate.value = this.rate;
+        source.playbackRate.value = this._cloudPlaybackRate();
         source.connect(ctx.destination);
         await new Promise((resolve, reject) => {
           source.onended = resolve;
@@ -1124,7 +1655,7 @@ class TTSEngine {
         });
       } else {
         this._currentAudio = new Audio(`data:${mimeType};base64,${b64}`);
-        this._currentAudio.playbackRate = this.rate;
+        this._currentAudio.playbackRate = this._cloudPlaybackRate();
         await new Promise((resolve, reject) => {
           this._currentAudio.onended = resolve;
           this._currentAudio.onerror = () => reject(new Error('再生エラー'));
@@ -1245,6 +1776,7 @@ class TTSEngine {
   load(cleanText) {
     this.stop();
     this._buildSegments(cleanText);
+    this._contentGenerationId++;
     this.currentIndex = 0;
     this._fetchedUpTo = -1;
   }
@@ -1269,14 +1801,56 @@ class TTSEngine {
     if (toFetch > 0) this._fetchedUpTo += toFetch;
   }
 
-  play() {
+  async play() {
     if (this.isPlaying || !this.segments.length) return;
     if (this.currentIndex >= this.segments.length) this.currentIndex = 0;
     this.isPlaying = true;
     // ユーザーアクション（タップ）の直後にAudioContextを起動状態にする（モバイルAutoplay Policy対応）
     if (this._cloudKey) this._ensureAudioCtx();
+    this._primeContinuousAudioElement();
+    const canResumeContinuous = this._cloudKey
+      && this._currentAudioIsContinuous
+      && this._currentAudio?.paused
+      && !this._currentAudio.ended
+      && Number.isFinite(this._currentAudio.duration)
+      && this._currentAudio.currentTime < Math.max(0, this._currentAudio.duration - 0.25);
+    if (canResumeContinuous) {
+      this._currentAudio.playbackRate = this._cloudPlaybackRate();
+      try {
+        await this._currentAudio.play();
+        logPlaybackEvent('continuous resumed');
+      } catch (e) {
+        this.isPlaying = false;
+        logPlaybackEvent(`continuous resume failed: ${e.message || e}`);
+        showToast('⚠ 再生を再開できませんでした', 4000);
+        releaseWakeLock();
+        pauseBackgroundKeepAlive();
+        if (this.onSegmentChange) this.onSegmentChange(-1);
+      }
+      return;
+    }
+    if (this._currentAudioIsContinuous && this._currentAudio?.ended) {
+      const resumeIndex = this.currentIndex;
+      this._clearContinuousAudio();
+      this.currentIndex = resumeIndex;
+    }
+    if (this._shouldUseContinuousAudio()) {
+      await this._playContinuous(this.currentIndex);
+      return;
+    }
+    if (isAndroidDevice() && !this._cloudKey) {
+      showToast('画面ロック再生はVOICEVOX / Google TTS / OpenAI TTSのAPI設定時に安定します', 6000);
+      logPlaybackEvent('native speech fallback: no cloud key');
+    }
     if (this._cloudKey && this._currentAudio?.paused) {
-      this._currentAudio.play();
+      this._currentAudio.play().catch(e => {
+        this.isPlaying = false;
+        logPlaybackEvent(`audio resume failed: ${e.message || e}`);
+        showToast('⚠ 再生を再開できませんでした', 4000);
+        releaseWakeLock();
+        pauseBackgroundKeepAlive();
+        if (this.onSegmentChange) this.onSegmentChange(-1);
+      });
       this._currentAudio.onended = () => { if (this.isPlaying) this._speakCloud(this.currentIndex + 1); };
       return;
     }
@@ -1320,6 +1894,7 @@ class TTSEngine {
   pause() {
     if (!this.isPlaying) return;
     this.isPlaying = false;
+    this._playToken++;
     if (this._cloudKey) {
       if (this._currentAudio) this._currentAudio.pause();
       // WebAudio再生中はsuspend（次回resume()で再開できるよう閉じない）
@@ -1332,8 +1907,11 @@ class TTSEngine {
   }
 
   _cancelAll() {
+    this._playToken++;
     window.speechSynthesis.cancel();
     if (this._currentAudio) { this._currentAudio.pause(); this._currentAudio = null; }
+    this._currentAudioIsContinuous = false;
+    this._clearContinuousAudio();
     // _sharedAudioCtxは閉じない（次のplay()で再利用するため）
   }
 
@@ -1347,39 +1925,55 @@ class TTSEngine {
 
   prev() {
     const idx = Math.max(0, this.currentIndex - 1);
+    if (this._seekContinuousIfBuffered(idx)) return;
     const wasPlaying = this.isPlaying;
     this.isPlaying = false;
     this._cancelAll();
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    if (wasPlaying) { this.isPlaying = true; if (this._cloudKey) this._ensureAudioCtx(); this._speak(idx); }
+    if (wasPlaying) this.play();
   }
 
   next() {
     const idx = Math.min(this.segments.length - 1, this.currentIndex + 1);
+    if (this._seekContinuousIfBuffered(idx)) return;
     const wasPlaying = this.isPlaying;
     this.isPlaying = false;
     this._cancelAll();
     this.currentIndex = idx;
     if (this.onSegmentChange) this.onSegmentChange(idx);
-    if (wasPlaying) { this.isPlaying = true; if (this._cloudKey) this._ensureAudioCtx(); this._speak(idx); }
+    if (wasPlaying) this.play();
   }
 
   seekTo(idx) {
+    const target = Math.max(0, Math.min(idx, this.segments.length - 1));
+    if (this._seekContinuousIfBuffered(target)) return;
     const wasPlaying = this.isPlaying;
     this.isPlaying = false;
     this._cancelAll();
     this._abortAll();
-    this.currentIndex = Math.max(0, Math.min(idx, this.segments.length - 1));
+    this.currentIndex = target;
     if (this.onSegmentChange) this.onSegmentChange(this.currentIndex);
     this._initPrefetchAt(this.currentIndex);
-    if (wasPlaying) { this.isPlaying = true; if (this._cloudKey) this._ensureAudioCtx(); this._speak(this.currentIndex); }
+    if (wasPlaying) this.play();
   }
 
   setRate(r) {
+    const oldRate = this.rate;
     this.rate = Math.max(1.0, Math.min(2.0, r));
     if (this._cloudKey) {
-      if (this._currentAudio) this._currentAudio.playbackRate = this.rate;
+      if (this._currentAudio) this._currentAudio.playbackRate = this._cloudPlaybackRate();
+      if (oldRate !== this.rate) {
+        this._settingsGenerationId++;
+        this._fetchedUpTo = -1;
+        if (this._ttsProvider === 'openai') {
+          this._audioCache.clear();
+          this._abortAll();
+        }
+        if (this.isPlaying && this._currentAudioIsContinuous) this._restartContinuousAudioFromCurrent();
+        else if (this.isPlaying) this._invalidateFutureContinuousAudio();
+        else this._clearContinuousBuffer();
+      }
     } else if (this.isPlaying) {
       const idx = this.currentIndex;
       const offset = this._lastCharIndex;
@@ -1424,16 +2018,27 @@ async function readAndClearShare() {
 // WAKE LOCK
 // ============================================================
 let wakeLock = null;
+let wakeLockRequestToken = 0;
 async function requestWakeLock() {
   if ('wakeLock' in navigator) {
+    const token = ++wakeLockRequestToken;
     try {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', () => { wakeLock = null; });
-    } catch { /* battery saver etc */ }
+      const sentinel = await navigator.wakeLock.request('screen');
+      if (token !== wakeLockRequestToken || !tts.isPlaying) {
+        sentinel.release().catch(() => {});
+        return;
+      }
+      wakeLock = sentinel;
+      wakeLock.addEventListener('release', () => { if (wakeLock === sentinel) wakeLock = null; logPlaybackEvent('wake lock released'); });
+      logPlaybackEvent('wake lock acquired');
+    } catch (e) {
+      logPlaybackEvent(`wake lock failed: ${e.message || e}`);
+    }
   }
 }
 function releaseWakeLock() {
-  if (wakeLock) { wakeLock.release(); wakeLock = null; }
+  wakeLockRequestToken++;
+  if (wakeLock) { wakeLock.release(); wakeLock = null; logPlaybackEvent('wake lock release requested'); }
 }
 
 // ============================================================
@@ -1451,6 +2056,7 @@ let silentOsc = null;
 function initSilentAudio() {
   if (silentAudioCtx) return;
   silentAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'playback' });
+  silentAudioCtx.addEventListener('statechange', () => logPlaybackEvent(`keepalive audioctx ${silentAudioCtx.state}`));
   const gain = silentAudioCtx.createGain();
   gain.gain.value = 0.0001; // 厳密に0だとブラウザがストリームを破棄する実装あり
   silentOsc = silentAudioCtx.createOscillator();
@@ -1498,9 +2104,13 @@ function setupMediaSession() {
   navigator.mediaSession.setActionHandler('play', () => safe(() => {
     if (!tts.total) return;
     if (!tts.isPlaying) {
-      tts.play();
+      const playPromise = tts.play();
       requestWakeLock();
       startBackgroundKeepAlive();
+      Promise.resolve(playPromise).then(() => {
+        if (!tts.isPlaying) { releaseWakeLock(); pauseBackgroundKeepAlive(); }
+        updatePlayBtn();
+      });
       updatePlayBtn();
     }
   }));
@@ -1628,12 +2238,16 @@ tts.onEnd = () => { updatePlayBtn(); releaseWakeLock(); stopBackgroundKeepAlive(
 tts.onWaiting = (waiting) => { const el = $('loading-indicator'); if (el) el.style.display = waiting ? '' : 'none'; };
 
 // Buttons
-$('btn-play').addEventListener('click', () => {
+$('btn-play').addEventListener('click', async () => {
   if (!tts.total) { showToast('テキストを読み込んでください'); return; }
   if (tts.isPlaying) {
     tts.pause(); releaseWakeLock(); pauseBackgroundKeepAlive();
   } else {
-    tts.play(); requestWakeLock(); startBackgroundKeepAlive();
+    const playPromise = tts.play();
+    requestWakeLock();
+    startBackgroundKeepAlive();
+    await playPromise;
+    if (!tts.isPlaying) { releaseWakeLock(); pauseBackgroundKeepAlive(); }
   }
   updatePlayBtn();
 });
@@ -1802,6 +2416,7 @@ $('btn-clipboard-dismiss').addEventListener('click', hideBanner);
 
 // フォーカス復帰時（Obsidianから切り替えてきたとき）
 document.addEventListener('visibilitychange', () => {
+  logPlaybackEvent(`visibility ${document.visibilityState}`);
   if (document.visibilityState === 'visible') checkClipboardOnFocus();
 });
 
