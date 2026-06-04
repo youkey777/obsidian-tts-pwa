@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v60</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v61</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -2343,6 +2343,14 @@ function htmlClipboardToText(html) {
   }
 }
 
+function insertTextAtCursor(el, text) {
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  const pos = start + text.length;
+  el.setSelectionRange(pos, pos);
+}
+
 async function readClipboard() {
   // 優先: navigator.clipboard.read() で HTML を取得
   // （D-Lab 等のアプリは plain text に bullet 本文を落とす場合があるが、HTML には残っている）
@@ -2382,6 +2390,22 @@ async function readClipboard() {
     return null;
   }
 }
+
+$('text-input').addEventListener('paste', e => {
+  const html = e.clipboardData?.getData('text/html');
+  if (!html) return;
+
+  const fromHtml = htmlClipboardToText(html);
+  if (!fromHtml) return;
+
+  const plain = e.clipboardData?.getData('text/plain')?.trim() || '';
+  const shouldUseHtml = fromHtml.length >= plain.length || fromHtml.length > plain.length * 0.9;
+  if (!shouldUseHtml) return;
+
+  e.preventDefault();
+  insertTextAtCursor(e.currentTarget, fromHtml);
+  showToast('HTML付きで貼り付けました');
+});
 
 async function handleClipboardLoad() {
   const text = _pendingClipboardText || await readClipboard();
