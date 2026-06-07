@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v61</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v62</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -2274,7 +2274,8 @@ $('btn-load').addEventListener('click', () => {
 // ============================================================
 // CLIPBOARD
 // ============================================================
-let _pendingClipboardText = '';
+let _pendingClipboardClip = null;
+let _safePasteMode = false;
 
 // HTML クリップボードを構造保持しながらテキスト化
 // （D-Lab 等で plain text に bullet 本文が落ちるのを HTML から復元する）
@@ -2351,18 +2352,38 @@ function insertTextAtCursor(el, text) {
   el.setSelectionRange(pos, pos);
 }
 
+function isAndroidLike() {
+  return /Android/i.test(navigator.userAgent || '');
+}
+
+function enterSafePasteMode(reason = '') {
+  hideBanner();
+  switchTab('input');
+  _safePasteMode = true;
+  const input = $('text-input');
+  input.value = '';
+  input.placeholder = 'ここを長押しして「貼り付け」してください。\n\n記事アプリのクリップボードは、普通の読み込みだと箇条書き本文が抜けることがあります。この欄に直接貼ると、HTML付き貼り付けから復元します。';
+  input.focus();
+  showToast(reason || '本文欠落を防ぐため、ここに貼り付けてください', 6000);
+}
+
 async function readClipboard() {
   // 優先: navigator.clipboard.read() で HTML を取得
   // （D-Lab 等のアプリは plain text に bullet 本文を落とす場合があるが、HTML には残っている）
   if (navigator.clipboard?.read) {
     try {
-      const items = await navigator.clipboard.read();
+      let items;
+      try {
+        items = await navigator.clipboard.read({ unsanitized: ['text/html'] });
+      } catch {
+        items = await navigator.clipboard.read();
+      }
       for (const item of items) {
         if (item.types.includes('text/html')) {
           const blob = await item.getType('text/html');
           const html = await blob.text();
           const fromHtml = htmlClipboardToText(html);
-          if (fromHtml) return fromHtml;
+          if (fromHtml) return { text: fromHtml, source: 'html', types: item.types };
         }
       }
       // HTML がなければ plain text にフォールバック
@@ -2370,7 +2391,7 @@ async function readClipboard() {
         if (item.types.includes('text/plain')) {
           const blob = await item.getType('text/plain');
           const txt = (await blob.text())?.trim();
-          if (txt) return txt;
+          if (txt) return { text: txt, source: 'plain', types: item.types };
         }
       }
     } catch (e) {
@@ -2384,7 +2405,8 @@ async function readClipboard() {
   }
   try {
     const text = await navigator.clipboard.readText();
-    return text?.trim() || null;
+    const txt = text?.trim();
+    return txt ? { text: txt, source: 'readText', types: ['text/plain'] } : null;
   } catch (e) {
     showToast('クリップボードへのアクセスが拒否されました');
     return null;
@@ -2393,30 +2415,53 @@ async function readClipboard() {
 
 $('text-input').addEventListener('paste', e => {
   const html = e.clipboardData?.getData('text/html');
-  if (!html) return;
+  if (!html) {
+    if (_safePasteMode) {
+      e.preventDefault();
+      showToast('HTML付きで貼り付けできません。元記事でもう一度コピーしてください', 7000);
+    }
+    return;
+  }
 
   const fromHtml = htmlClipboardToText(html);
   if (!fromHtml) return;
 
   const plain = e.clipboardData?.getData('text/plain')?.trim() || '';
-  const shouldUseHtml = fromHtml.length >= plain.length || fromHtml.length > plain.length * 0.9;
+  const shouldUseHtml = _safePasteMode || fromHtml.length >= plain.length || fromHtml.length > plain.length * 0.9;
   if (!shouldUseHtml) return;
 
   e.preventDefault();
   insertTextAtCursor(e.currentTarget, fromHtml);
-  showToast('HTML付きで貼り付けました');
+  if (_safePasteMode) {
+    _safePasteMode = false;
+    loadText(fromHtml);
+    e.currentTarget.value = '';
+  } else {
+    showToast('HTML付きで貼り付けました');
+  }
 });
 
 async function handleClipboardLoad() {
-  const text = _pendingClipboardText || await readClipboard();
-  if (!text) { showToast('クリップボードが空です'); return; }
-  _pendingClipboardText = '';
+  const clip = _pendingClipboardClip
+    ? _pendingClipboardClip
+    : await readClipboard();
+  if (!clip?.text) { showToast('クリップボードが空です'); return; }
+
+  if (isAndroidLike() && clip.source !== 'html') {
+    enterSafePasteMode('この読み込み方だと箇条書きが欠ける可能性があります');
+    return;
+  }
+
+  _pendingClipboardClip = null;
   hideBanner();
-  loadText(text);
+  loadText(clip.text);
 }
 
-function showBanner(text) {
-  _pendingClipboardText = text;
+function showBanner(clip) {
+  _pendingClipboardClip = typeof clip === 'string'
+    ? { text: clip, source: 'plain', types: ['text/plain'] }
+    : clip;
+  const text = _pendingClipboardClip?.text || '';
   const preview = text.slice(0, 40).replace(/\n/g, ' ');
   $('clipboard-preview').textContent = preview + (text.length > 40 ? '…' : '');
   $('clipboard-banner').classList.add('show');
@@ -2424,14 +2469,14 @@ function showBanner(text) {
 
 function hideBanner() {
   $('clipboard-banner').classList.remove('show');
-  _pendingClipboardText = '';
+  _pendingClipboardClip = null;
 }
 
 // アプリにフォーカスが戻ったときにクリップボードを自動検出
 async function checkClipboardOnFocus() {
   if (tts.total > 0) return; // 既にテキストがロードされていれば無視
-  const text = await readClipboard().catch(() => null);
-  if (text && text.length > 80) showBanner(text);
+  const clip = await readClipboard().catch(() => null);
+  if (clip?.source === 'html' && clip.text.length > 80) showBanner(clip);
 }
 
 $('btn-clipboard-main').addEventListener('click', handleClipboardLoad);
