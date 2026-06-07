@@ -464,7 +464,7 @@
 <div id="app">
 
   <div id="header">
-    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v62</span>
+    <span id="app-title">🎧 ObsTTS</span><span style="font-size:10px; color:var(--muted); margin-left:6px; opacity:0.7; font-weight:normal; letter-spacing:0;">v63</span>
     <span id="note-title">共有またはテキストを貼り付けて開始</span>
     <button id="btn-clear" title="クリア" style="display:none; background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94a3b8; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; flex-shrink:0;">クリア</button>
   </div>
@@ -592,8 +592,8 @@
     </div>
     <div id="speed-row">
       <span id="speed-label">速度</span>
-      <input type="range" id="speed-slider" min="10" max="20" step="1" value="17">
-      <span id="speed-display">1.7x</span>
+      <input type="range" id="speed-slider" min="10" max="20" step="1" value="15">
+      <span id="speed-display">1.5x</span>
     </div>
     <div id="voice-row">
       <span id="voice-label">音声</span>
@@ -875,7 +875,7 @@ class TTSEngine {
     this.segmentTypes = [];
     this.currentIndex = 0;
     this.isPlaying = false;
-    this.rate = 1.7;
+    this.rate = 1.5;
     this._lastCharIndex = 0;
     this.onSegmentChange = null;
     this.onEnd = null;
@@ -2275,7 +2275,6 @@ $('btn-load').addEventListener('click', () => {
 // CLIPBOARD
 // ============================================================
 let _pendingClipboardClip = null;
-let _safePasteMode = false;
 
 // HTML クリップボードを構造保持しながらテキスト化
 // （D-Lab 等で plain text に bullet 本文が落ちるのを HTML から復元する）
@@ -2352,21 +2351,6 @@ function insertTextAtCursor(el, text) {
   el.setSelectionRange(pos, pos);
 }
 
-function isAndroidLike() {
-  return /Android/i.test(navigator.userAgent || '');
-}
-
-function enterSafePasteMode(reason = '') {
-  hideBanner();
-  switchTab('input');
-  _safePasteMode = true;
-  const input = $('text-input');
-  input.value = '';
-  input.placeholder = 'ここを長押しして「貼り付け」してください。\n\n記事アプリのクリップボードは、普通の読み込みだと箇条書き本文が抜けることがあります。この欄に直接貼ると、HTML付き貼り付けから復元します。';
-  input.focus();
-  showToast(reason || '本文欠落を防ぐため、ここに貼り付けてください', 6000);
-}
-
 async function readClipboard() {
   // 優先: navigator.clipboard.read() で HTML を取得
   // （D-Lab 等のアプリは plain text に bullet 本文を落とす場合があるが、HTML には残っている）
@@ -2415,30 +2399,18 @@ async function readClipboard() {
 
 $('text-input').addEventListener('paste', e => {
   const html = e.clipboardData?.getData('text/html');
-  if (!html) {
-    if (_safePasteMode) {
-      e.preventDefault();
-      showToast('HTML付きで貼り付けできません。元記事でもう一度コピーしてください', 7000);
-    }
-    return;
-  }
+  if (!html) return;
 
   const fromHtml = htmlClipboardToText(html);
   if (!fromHtml) return;
 
   const plain = e.clipboardData?.getData('text/plain')?.trim() || '';
-  const shouldUseHtml = _safePasteMode || fromHtml.length >= plain.length || fromHtml.length > plain.length * 0.9;
+  const shouldUseHtml = fromHtml.length >= plain.length || fromHtml.length > plain.length * 0.9;
   if (!shouldUseHtml) return;
 
   e.preventDefault();
   insertTextAtCursor(e.currentTarget, fromHtml);
-  if (_safePasteMode) {
-    _safePasteMode = false;
-    loadText(fromHtml);
-    e.currentTarget.value = '';
-  } else {
-    showToast('HTML付きで貼り付けました');
-  }
+  showToast('HTML付きで貼り付けました');
 });
 
 async function handleClipboardLoad() {
@@ -2446,11 +2418,6 @@ async function handleClipboardLoad() {
     ? _pendingClipboardClip
     : await readClipboard();
   if (!clip?.text) { showToast('クリップボードが空です'); return; }
-
-  if (isAndroidLike() && clip.source !== 'html') {
-    enterSafePasteMode('この読み込み方だと箇条書きが欠ける可能性があります');
-    return;
-  }
 
   _pendingClipboardClip = null;
   hideBanner();
